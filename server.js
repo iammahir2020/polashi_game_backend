@@ -5,12 +5,24 @@ const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-app.use(cors());
+
+const allowedOrigin = process.env.CLIENT_URL || "*";
+
+app.use(cors({
+  origin: allowedOrigin,
+  credentials: true
+}));
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
 
-const PORT = 3000;
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigin,
+    credentials: true
+  }
+});
+
+const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 10;
 
 const rooms = {};
@@ -169,7 +181,7 @@ function broadcastRoomUpdate(roomCode) {
 }
 
 app.get("/", (_, res) => {
-  res.json({ status: "OK", rooms: Object.keys(rooms).length });
+  res.json({ status: "AAALL IS WELL", rooms: Object.keys(rooms).length });
 });
 
 // --- SOCKET LOGIC ---
@@ -370,24 +382,24 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("assignGeneral", ({ roomCode, requesterId }) => {
-    const room = rooms[roomCode];
-    if (!room) return;
+  // socket.on("assignGeneral", ({ roomCode, requesterId }) => {
+  //   const room = rooms[roomCode];
+  //   if (!room) return;
 
-    // 1. Validation: Only GM can do this
-    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-    if (!gm) return socket.emit("errorMessage", "Only the GM can appoint a General.");
+  //   // 1. Validation: Only GM can do this
+  //   const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+  //   if (!gm) return socket.emit("errorMessage", "Only the GM can appoint a General.");
 
-    // 2. Logic: Pick a random player
-    const randomIndex = Math.floor(Math.random() * room.players.length);
+  //   // 2. Logic: Pick a random player
+  //   const randomIndex = Math.floor(Math.random() * room.players.length);
     
-    // 3. Clear existing general (if any) and set the new one
-    room.players.forEach((p, idx) => {
-      p.isGeneral = (idx === randomIndex);
-    });
+  //   // 3. Clear existing general (if any) and set the new one
+  //   room.players.forEach((p, idx) => {
+  //     p.isGeneral = (idx === randomIndex);
+  //   });
 
-    broadcastRoomUpdate(roomCode);
-  });
+  //   broadcastRoomUpdate(roomCode);
+  // });
 
   socket.on("resetGame", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
@@ -471,6 +483,9 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+// server.listen(PORT, '0.0.0.0', () => {
+//   console.log(`Server running on port ${PORT}`);
+// });
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
