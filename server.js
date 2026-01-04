@@ -101,7 +101,7 @@ const CharacterList = [
 ];
 
 const fakeHistoricalNames = [
-  "জগত শেঠ", "উমিচাঁদ", "খাজা ওয়াজিদ", "রাজবল্লভ", 
+  "জগত শেঠ", "উমিচাঁদ", "খাজা ওয়াজিদ", "রাজবল্লভ",
   "সিরাজুল ইসলাম", "বদর আলী", "শওকত জং", "মুর্শিদ কুলি খান"
 ];
 
@@ -109,7 +109,14 @@ const fakeHistoricalNames = [
 // --- HELPERS ---
 
 function shuffle(array) {
-  return array.sort(() => Math.random() - 0.5);
+  let currentIndex = array.length, randomIndex;
+  while (currentIndex !== 0) {
+    randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
+    [array[currentIndex], array[randomIndex]] = [
+      array[randomIndex], array[currentIndex]];
+  }
+  return array;
 }
 
 function broadcastRoomUpdate(roomCode) {
@@ -151,18 +158,18 @@ function broadcastRoomUpdate(roomCode) {
         }
 
         // --- Red Herring Logic (For Standard Characters) ---
-      const specialIds = [8, 9];
-      const isStandardEIC = myChar.team === "East India Company (EIC)" && myChar.id !== 4;
-      
-      if (!isStandardEIC && !specialIds.includes(myChar.id) && intelNames.length === 0) {
-        // Pick 2 names from the historical pool that AREN'T in the current character list 
-        // to prevent confusion with active roles
-        const activeCharNames = room.players.map(pl => pl.character?.name);
-        const safeFakeNames = fakeHistoricalNames.filter(name => !activeCharNames.includes(name));
-        
-        const shuffledFake = safeFakeNames.sort(() => 0.5 - Math.random());
-        intelNames.push(...shuffledFake.slice(0, 2));
-      }
+        const specialIds = [8, 9];
+        const isStandardEIC = myChar.team === "East India Company (EIC)" && myChar.id !== 4;
+
+        if (!isStandardEIC && !specialIds.includes(myChar.id) && intelNames.length === 0) {
+          // Pick 2 names from the historical pool that AREN'T in the current character list 
+          // to prevent confusion with active roles
+          const activeCharNames = room.players.map(pl => pl.character?.name);
+          const safeFakeNames = fakeHistoricalNames.filter(name => !activeCharNames.includes(name));
+
+          const shuffledFake = safeFakeNames.sort(() => 0.5 - Math.random());
+          intelNames.push(...shuffledFake.slice(0, 2));
+        }
       });
     }
 
@@ -173,9 +180,9 @@ function broadcastRoomUpdate(roomCode) {
         character: other.id === p.id ? other.character : null,
       })),
       // Add the secret intel specifically for this player
-      secretIntel: intelNames 
+      secretIntel: intelNames
     };
-    
+
     io.to(p.socketId).emit("roomUpdated", personalizedRoom);
   });
 }
@@ -218,13 +225,13 @@ io.on("connection", (socket) => {
     if (room.players.length >= MAX_PLAYERS) return socket.emit("errorMessage", "Room full");
 
     const id = uuidv4();
-    room.players.push({ 
-        id, 
-        name, 
-        socketId: socket.id, 
-        isGameMaster: false,
-        online: true,
-        character: null 
+    room.players.push({
+      id,
+      name,
+      socketId: socket.id,
+      isGameMaster: false,
+      online: true,
+      character: null
     });
 
     socket.join(roomCode);
@@ -235,11 +242,11 @@ io.on("connection", (socket) => {
   socket.on("closeRoom", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
-  
+
     // Validation: Only GM can dissolve
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
-  
+
     // 1. Notify everyone in the room
     io.to(roomCode).emit("roomDissolved");
 
@@ -250,14 +257,13 @@ io.on("connection", (socket) => {
         if (s) s.leave(roomCode);
       }
     }
-  
+
     // 2. Remove room from memory
     delete rooms[roomCode];
   });
 
   socket.on("reconnectPlayer", ({ roomCode, playerId }) => {
     const room = rooms[roomCode];
-    // if (!room) return socket.emit("errorMessage", "Room no longer exists");
     if (!room) {
       socket.emit("errorMessage", "Room no longer exists");
       socket.emit("roomDissolved");
@@ -268,15 +274,15 @@ io.on("connection", (socket) => {
     if (!player) return socket.emit("errorMessage", "Player not found in room");
 
     player.socketId = socket.id;
-    player.online = true; 
-    
+    player.online = true;
+
     socket.join(roomCode);
 
     // FIX: Send a confirmation to the reconnected player so their UI switches
-    socket.emit("roomJoined", { 
-      roomCode, 
-      playerId, 
-      room 
+    socket.emit("roomJoined", {
+      roomCode,
+      playerId,
+      room
     });
 
     // Notify others that the player is back online
@@ -292,14 +298,14 @@ io.on("connection", (socket) => {
 
     const randomIndex = Math.floor(Math.random() * room.players.length);
     const newGeneral = room.players[randomIndex];
-    
+
     room.players.forEach((p, idx) => {
       p.isGeneral = (idx === randomIndex);
     });
 
     // 1. Send the data update
     broadcastRoomUpdate(roomCode);
-    
+
     // 2. Explicitly trigger the animation event for all clients
     io.to(roomCode).emit("triggerGeneralAnimation", { name: newGeneral.name });
   });
@@ -340,79 +346,118 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("startGame", ({ roomCode, requesterId }) => {
-    const room = rooms[roomCode];
-    if (!room) return;
-  
-    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-    if (!gm) return socket.emit("errorMessage", "Only GM allowed");
-  
-    const playerCount = room.players.length;
-    if (playerCount < 2) return socket.emit("errorMessage", "Minimum 2 players required");
-  
-    // Mandatory Characters
-    const mirJafar = CharacterList.find(c => c.id === 1);
-    const mirMadan = CharacterList.find(c => c.id === 8);
-    
-    let gameDeck = [mirMadan, mirJafar];
-  
-    // Logic for 5-10 players (Strict Team Balancing)
-    if (playerCount >= 5) {
-      const teamDistributions = {
-        5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4]
-      };
-      const [nawabTarget, eicTarget] = teamDistributions[playerCount];
-  
-      const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
-      const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
-  
-      // Fill Nawabs (already have 1)
-      for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
-      // Fill EIC (already have 1)
-      for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
-  
-    } 
-    // Logic for 2-4 players (Mandatory first, then Random)
-    else {
-      const remainingPool = shuffle(CharacterList.filter(c => c.id !== 1 && c.id !== 8));
-      
-      // For exactly 2 players, the deck is already full with the 2 mandatory ones.
-      // For 3 or 4, we add 1 or 2 more random characters.
-      while (gameDeck.length < playerCount) {
-        gameDeck.push(remainingPool.pop());
-      }
-    }
-  
-    // Final shuffle so Mir Jafar/Madan aren't always the first two players
-    const finalShuffledDeck = shuffle(gameDeck);
-  
-    room.players.forEach((player, index) => {
-      player.character = finalShuffledDeck[index];
-    });
-  
-    room.gameStarted = true;
-    room.locked = true; 
-    broadcastRoomUpdate(roomCode);
-  });
-
-  // socket.on("assignGeneral", ({ roomCode, requesterId }) => {
+  // socket.on("startGame", ({ roomCode, requesterId }) => {
   //   const room = rooms[roomCode];
   //   if (!room) return;
 
-  //   // 1. Validation: Only GM can do this
   //   const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-  //   if (!gm) return socket.emit("errorMessage", "Only the GM can appoint a General.");
+  //   if (!gm) return socket.emit("errorMessage", "Only GM allowed");
 
-  //   // 2. Logic: Pick a random player
-  //   const randomIndex = Math.floor(Math.random() * room.players.length);
-    
-  //   // 3. Clear existing general (if any) and set the new one
-  //   room.players.forEach((p, idx) => {
-  //     p.isGeneral = (idx === randomIndex);
+  //   const playerCount = room.players.length;
+  //   if (playerCount < 2) return socket.emit("errorMessage", "Minimum 2 players required");
+
+  //   // Mandatory Characters
+  //   const mirJafar = CharacterList.find(c => c.id === 1);
+  //   const mirMadan = CharacterList.find(c => c.id === 8);
+
+  //   let gameDeck = [mirMadan, mirJafar];
+
+  //   // Logic for 5-10 players (Strict Team Balancing)
+  //   if (playerCount >= 5) {
+  //     const teamDistributions = {
+  //       5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4]
+  //     };
+  //     const [nawabTarget, eicTarget] = teamDistributions[playerCount];
+
+  //     const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
+  //     const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
+
+  //     // Fill Nawabs (already have 1)
+  //     for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
+  //     // Fill EIC (already have 1)
+  //     for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
+
+  //   } 
+  //   // Logic for 2-4 players (Mandatory first, then Random)
+  //   else {
+  //     const remainingPool = shuffle(CharacterList.filter(c => c.id !== 1 && c.id !== 8));
+
+  //     // For exactly 2 players, the deck is already full with the 2 mandatory ones.
+  //     // For 3 or 4, we add 1 or 2 more random characters.
+  //     while (gameDeck.length < playerCount) {
+  //       gameDeck.push(remainingPool.pop());
+  //     }
+  //   }
+
+  //   // Final shuffle so Mir Jafar/Madan aren't always the first two players
+  //   const finalShuffledDeck = shuffle(gameDeck);
+
+  //   room.players.forEach((player, index) => {
+  //     player.character = finalShuffledDeck[index];
   //   });
 
+  //   room.gameStarted = true;
+  //   room.locked = true; 
   //   broadcastRoomUpdate(roomCode);
   // });
+
+  socket.on("startGame", ({ roomCode, requesterId }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+    if (!gm) return socket.emit("errorMessage", "Only GM allowed");
+
+    const playerCount = room.players.length;
+    if (playerCount < 2) return socket.emit("errorMessage", "Minimum 2 players required");
+
+    const mirJafar = CharacterList.find(c => c.id === 1);
+    const mirMadan = CharacterList.find(c => c.id === 8);
+    let gameDeck = [mirMadan, mirJafar];
+
+    if (playerCount >= 5) {
+      const teamDistributions = { 5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4] };
+      const [nawabTarget, eicTarget] = teamDistributions[playerCount];
+      const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
+      const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
+      for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
+      for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
+    } else {
+      const remainingPool = shuffle(CharacterList.filter(c => c.id !== 1 && c.id !== 8));
+      while (gameDeck.length < playerCount) gameDeck.push(remainingPool.pop());
+    }
+
+    let deck = shuffle([...gameDeck]);
+    let assignments = new Array(playerCount).fill(null);
+    let usedDeckIndices = new Set();
+
+    room.players.forEach((player, pIdx) => {
+      for (let dIdx = 0; dIdx < deck.length; dIdx++) {
+        if (!usedDeckIndices.has(dIdx) && deck[dIdx].id !== player.lastCharacterId) {
+          assignments[pIdx] = deck[dIdx];
+          usedDeckIndices.add(dIdx);
+          break;
+        }
+      }
+    });
+
+    room.players.forEach((player, pIdx) => {
+      if (!assignments[pIdx]) {
+        const remainingIdx = deck.findIndex((_, i) => !usedDeckIndices.has(i));
+        assignments[pIdx] = deck[remainingIdx];
+        usedDeckIndices.add(remainingIdx);
+      }
+
+      if (player.character) {
+        player.lastCharacterId = player.character.id;
+      }
+      player.character = assignments[pIdx];
+    });
+
+    room.gameStarted = true;
+    room.locked = true;
+    broadcastRoomUpdate(roomCode);
+  });
 
   socket.on("resetGame", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
@@ -427,6 +472,9 @@ io.on("connection", (socket) => {
     room.voting = null;
 
     room.players.forEach(player => {
+      if (player.character) {
+        player.lastCharacterId = player.character.id;
+      }
       player.character = null;
       player.isGeneral = false;
     });
@@ -447,20 +495,20 @@ io.on("connection", (socket) => {
   socket.on("leaveRoom", ({ roomCode, playerId }) => {
     const room = rooms[roomCode];
     if (!room) return;
-  
+
     const index = room.players.findIndex(p => p.id === playerId);
     if (index !== -1) {
       const wasGM = room.players[index].isGameMaster;
       room.players.splice(index, 1);
-  
+
       if (room.players.length === 0) {
         delete rooms[roomCode];
-        return; 
+        return;
       }
-  
+
       if (wasGM) room.players[0].isGameMaster = true;
       room.turnIndex %= room.players.length;
-      
+
       broadcastRoomUpdate(roomCode);
       socket.leave(roomCode);
     }
