@@ -242,6 +242,14 @@ io.on("connection", (socket) => {
   
     // 1. Notify everyone in the room
     io.to(roomCode).emit("roomDissolved");
+
+    const roomSockets = io.sockets.adapter.rooms.get(roomCode);
+    if (roomSockets) {
+      for (const socketId of roomSockets) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) s.leave(roomCode);
+      }
+    }
   
     // 2. Remove room from memory
     delete rooms[roomCode];
@@ -249,7 +257,12 @@ io.on("connection", (socket) => {
 
   socket.on("reconnectPlayer", ({ roomCode, playerId }) => {
     const room = rooms[roomCode];
-    if (!room) return socket.emit("errorMessage", "Room no longer exists");
+    // if (!room) return socket.emit("errorMessage", "Room no longer exists");
+    if (!room) {
+      socket.emit("errorMessage", "Room no longer exists");
+      socket.emit("roomDissolved");
+      return;
+    }
 
     const player = room.players.find(p => p.id === playerId);
     if (!player) return socket.emit("errorMessage", "Player not found in room");
