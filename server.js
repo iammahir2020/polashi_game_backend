@@ -301,6 +301,8 @@ io.on("connection", (socket) => {
       room.generalHistory = [];
     }
 
+    room.proposedTeam = [];
+
     // Filter out players who have already been General in this cycle
     let eligiblePlayers = room.players.filter(p => !room.generalHistory.includes(p.id));
 
@@ -499,6 +501,14 @@ io.on("connection", (socket) => {
       player.isGeneral = false;
     });
 
+    broadcastRoomUpdate(roomCode);
+  });
+
+  socket.on("proposeTeam", ({ roomCode, playerIds }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+    
+    room.proposedTeam = playerIds; // Array of player IDs
     broadcastRoomUpdate(roomCode);
   });
 
