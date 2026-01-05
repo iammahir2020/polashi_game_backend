@@ -175,6 +175,7 @@ function broadcastRoomUpdate(roomCode) {
 
     const personalizedRoom = {
       ...room,
+      proposedTeam: room.proposedTeam || [],
       players: room.players.map((other) => ({
         ...other,
         character: other.id === p.id ? other.character : null,
