@@ -296,17 +296,36 @@ io.on("connection", (socket) => {
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return socket.emit("errorMessage", "Only the GM can appoint a General.");
 
-    const randomIndex = Math.floor(Math.random() * room.players.length);
-    const newGeneral = room.players[randomIndex];
+    // Initialize history if it doesn't exist
+    if (!room.generalHistory) {
+      room.generalHistory = [];
+    }
 
-    room.players.forEach((p, idx) => {
-      p.isGeneral = (idx === randomIndex);
+    // Filter out players who have already been General in this cycle
+    let eligiblePlayers = room.players.filter(p => !room.generalHistory.includes(p.id));
+
+    // If everyone has been General, reset the cycle
+    if (eligiblePlayers.length === 0) {
+      room.generalHistory = [];
+      eligiblePlayers = room.players;
+    }
+
+    // Pick a random player from the ELIGIBLE pool
+    const randomIndex = Math.floor(Math.random() * eligiblePlayers.length);
+    const newGeneral = eligiblePlayers[randomIndex];
+
+    // Update history
+    room.generalHistory.push(newGeneral.id);
+
+    // Update the room state
+    room.players.forEach((p) => {
+      p.isGeneral = (p.id === newGeneral.id);
     });
 
     // 1. Send the data update
     broadcastRoomUpdate(roomCode);
 
-    // 2. Explicitly trigger the animation event for all clients
+    // 2. Trigger the animation for all clients
     io.to(roomCode).emit("triggerGeneralAnimation", { name: newGeneral.name });
   });
 
@@ -470,6 +489,7 @@ io.on("connection", (socket) => {
     room.locked = false;
     room.turnIndex = 0;
     room.voting = null;
+    room.generalHistory = [];
 
     room.players.forEach(player => {
       if (player.character) {
