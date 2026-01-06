@@ -307,6 +307,10 @@ io.on("connection", (socket) => {
     // Filter out players who have already been General in this cycle
     let eligiblePlayers = room.players.filter(p => !room.generalHistory.includes(p.id));
 
+    if (room.generalHistory.length === 0 && eligiblePlayers.length > 1) {
+      eligiblePlayers = eligiblePlayers.filter(p => p.id !== requesterId);
+    }
+
     // If everyone has been General, reset the cycle
     if (eligiblePlayers.length === 0) {
       room.generalHistory = [];
@@ -338,7 +342,17 @@ io.on("connection", (socket) => {
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return;
 
-    room.voting = { active: true, votes: {}, result: null };
+    room.voting = { active: true, votes: {}, result: null, type: "teamApproval" };
+    broadcastRoomUpdate(roomCode);
+  });
+
+  socket.on("startSecretVote", ({ roomCode, requesterId }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+    if (!gm) return;
+
+    room.voting = { active: true, votes: {}, result: null, type: "missionOutcome" };
     broadcastRoomUpdate(roomCode);
   });
 
@@ -346,24 +360,49 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room || !room.voting || !room.voting.active) return;
 
+    if (room.voting.type !== "teamApproval") {
+      const isTeamMember = room.proposedTeam?.includes(playerId);
+      if (!isTeamMember) {
+        console.log(`Unauthorized vote attempt by ${playerId}`);
+        return; // Exit if a spectator tries to vote during a secret mission
+      }
+    }
+
     room.voting.votes[playerId] = choice;
 
-    const totalPlayers = room.players.length;
+    const targetCount = room.voting.type === "teamApproval" 
+      ? room.players.length 
+      : (room.proposedTeam?.length || 0);
+
     const votesCount = Object.keys(room.voting.votes).length;
 
-    if (votesCount === totalPlayers) {
+    if (votesCount === targetCount) {
       const yesVotes = Object.values(room.voting.votes).filter(v => v === "yes").length;
       const noVotes = Object.values(room.voting.votes).filter(v => v === "no").length;
 
-      room.voting.result = (noVotes >= totalPlayers / 2) ? "No" : "Yes";
+      // Handle Result Logic based on Type
+      if (room.voting.type === "teamApproval") {
+        // Standard Council Logic: Majority reject means "No"
+        room.voting.result = (noVotes >= room.players.length / 2) ? "No" : "Yes";
+      } else {
+        // Secret Vote Logic: Typically, even 1 "no" (sabotage) causes failure
+        // You can change this to (noVotes > 0) if you want strict "one fail = fail" rules
+        room.voting.result = (noVotes > 0) ? "No" : "Yes"; 
+      }
+
       room.voting.active = false;
     }
+
     broadcastRoomUpdate(roomCode);
   });
 
   socket.on("clearVote", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
+
+    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+    if (!gm) return;
+
     room.voting = null;
     broadcastRoomUpdate(roomCode);
   });
