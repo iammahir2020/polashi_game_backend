@@ -105,6 +105,14 @@ const fakeHistoricalNames = [
   "সিরাজুল ইসলাম", "বদর আলী", "শওকত জং", "মুর্শিদ কুলি খান"
 ];
 
+const MISSION_REQUIREMENTS = [
+  { players: 3, failsRequired: 1 }, // Round 1
+  { players: 4, failsRequired: 1 }, // Round 2
+  { players: 4, failsRequired: 1 }, // Round 3
+  { players: 5, failsRequired: 2 }, // Round 4 (Special Rule: 2 fails needed)
+  { players: 5, failsRequired: 1 }, // Round 5
+];
+
 
 // --- HELPERS ---
 
@@ -374,24 +382,43 @@ io.on("connection", (socket) => {
       ? room.players.length 
       : (room.proposedTeam?.length || 0);
 
-    const votesCount = Object.keys(room.voting.votes).length;
-
-    if (votesCount === targetCount) {
-      const yesVotes = Object.values(room.voting.votes).filter(v => v === "yes").length;
-      const noVotes = Object.values(room.voting.votes).filter(v => v === "no").length;
-
-      // Handle Result Logic based on Type
-      if (room.voting.type === "teamApproval") {
-        // Standard Council Logic: Majority reject means "No"
-        room.voting.result = (noVotes >= room.players.length / 2) ? "No" : "Yes";
-      } else {
-        // Secret Vote Logic: Typically, even 1 "no" (sabotage) causes failure
-        // You can change this to (noVotes > 0) if you want strict "one fail = fail" rules
-        room.voting.result = (noVotes > 0) ? "No" : "Yes"; 
+      if (Object.keys(room.voting.votes).length === targetCount) {
+        const yesVotes = Object.values(room.voting.votes).filter(v => v === "yes").length;
+        const noVotes = Object.values(room.voting.votes).filter(v => v === "no").length;
+    
+        if (room.voting.type === "teamApproval") {
+          // Logic for Council Vote (Majority check)
+          room.voting.result = (noVotes >= room.players.length / 2) ? "No" : "Yes";
+        } else {
+          // --- NEW: MISSION RESOLUTION LOGIC ---
+          const config = MISSION_REQUIREMENTS[room.currentRound - 1];
+          
+          // Check if sabotages (noVotes) met the requirement for this specific round
+          if (noVotes >= config.failsRequired) {
+            room.voting.result = "No"; // Red Wins Round
+            room.scoreRed++;
+            room.roundHistory.push("Red");
+          } else {
+            room.voting.result = "Yes"; // Green Wins Round
+            room.scoreGreen++;
+            room.roundHistory.push("Green");
+          }
+    
+          // Check for Overall Match Winner (Best of 3)
+          if (room.scoreGreen === 3) {
+            room.gameStatus = "OVER";
+            room.winner = "Nawabs (Green)";
+          } else if (room.scoreRed === 3) {
+            room.gameStatus = "OVER";
+            room.winner = "EIC (Red)";
+          } else {
+            // If game isn't over, prepare for the next round
+            room.currentRound++;
+            // The UI should now trigger "Appoint General" for the new round
+          }
+        }
+        room.voting.active = false;
       }
-
-      room.voting.active = false;
-    }
 
     broadcastRoomUpdate(roomCode);
   });
@@ -406,61 +433,6 @@ io.on("connection", (socket) => {
     room.voting = null;
     broadcastRoomUpdate(roomCode);
   });
-
-  // socket.on("startGame", ({ roomCode, requesterId }) => {
-  //   const room = rooms[roomCode];
-  //   if (!room) return;
-
-  //   const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-  //   if (!gm) return socket.emit("errorMessage", "Only GM allowed");
-
-  //   const playerCount = room.players.length;
-  //   if (playerCount < 2) return socket.emit("errorMessage", "Minimum 2 players required");
-
-  //   // Mandatory Characters
-  //   const mirJafar = CharacterList.find(c => c.id === 1);
-  //   const mirMadan = CharacterList.find(c => c.id === 8);
-
-  //   let gameDeck = [mirMadan, mirJafar];
-
-  //   // Logic for 5-10 players (Strict Team Balancing)
-  //   if (playerCount >= 5) {
-  //     const teamDistributions = {
-  //       5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4]
-  //     };
-  //     const [nawabTarget, eicTarget] = teamDistributions[playerCount];
-
-  //     const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
-  //     const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
-
-  //     // Fill Nawabs (already have 1)
-  //     for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
-  //     // Fill EIC (already have 1)
-  //     for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
-
-  //   } 
-  //   // Logic for 2-4 players (Mandatory first, then Random)
-  //   else {
-  //     const remainingPool = shuffle(CharacterList.filter(c => c.id !== 1 && c.id !== 8));
-
-  //     // For exactly 2 players, the deck is already full with the 2 mandatory ones.
-  //     // For 3 or 4, we add 1 or 2 more random characters.
-  //     while (gameDeck.length < playerCount) {
-  //       gameDeck.push(remainingPool.pop());
-  //     }
-  //   }
-
-  //   // Final shuffle so Mir Jafar/Madan aren't always the first two players
-  //   const finalShuffledDeck = shuffle(gameDeck);
-
-  //   room.players.forEach((player, index) => {
-  //     player.character = finalShuffledDeck[index];
-  //   });
-
-  //   room.gameStarted = true;
-  //   room.locked = true; 
-  //   broadcastRoomUpdate(roomCode);
-  // });
 
   socket.on("startGame", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
@@ -515,6 +487,13 @@ io.on("connection", (socket) => {
       player.character = assignments[pIdx];
     });
 
+    // NEW: Initialize Round and Score Tracking
+    room.currentRound = 1;
+    room.scoreGreen = 0;
+    room.scoreRed = 0;
+    room.roundHistory = []; // Tracks "Green" or "Red" for each round
+    room.gameStatus = "ACTIVE";
+
     room.gameStarted = true;
     room.locked = true;
     broadcastRoomUpdate(roomCode);
@@ -532,6 +511,11 @@ io.on("connection", (socket) => {
     room.turnIndex = 0;
     room.voting = null;
     room.generalHistory = [];
+
+    room.gameStatus = "WAITING";
+    room.voting = null;
+    room.generalHistory = [];
+    room.proposedTeam = [];
 
     room.players.forEach(player => {
       if (player.character) {
