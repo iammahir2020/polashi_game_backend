@@ -178,6 +178,7 @@ function broadcastRoomUpdate(roomCode) {
           const shuffledFake = safeFakeNames.sort(() => 0.5 - Math.random());
           intelNames.push(...shuffledFake.slice(0, 2));
         }
+        intelNames = shuffle([...intelNames]);
       });
     }
 
