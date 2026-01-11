@@ -348,8 +348,8 @@ io.on("connection", (socket) => {
   socket.on("startVote", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
-    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-    if (!gm) return;
+    // const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+    // if (!gm) return;
 
     room.voting = { active: true, votes: {}, result: null, type: "teamApproval" };
     broadcastRoomUpdate(roomCode);
