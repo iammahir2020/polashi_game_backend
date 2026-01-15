@@ -221,7 +221,10 @@ io.on("connection", (socket) => {
       }],
       locked: false,
       gameStarted: false,
-      turnIndex: 0
+      turnIndex: 0,
+      guptochorId: null,
+      guptochorUsed: false,
+      nextGuptochorId: null,
     };
 
     socket.join(roomCode);
@@ -270,6 +273,25 @@ io.on("connection", (socket) => {
 
     // 2. Remove room from memory
     delete rooms[roomCode];
+  });
+
+  socket.on("investigatePlayer", ({ roomCode, targetPlayerId, requesterId }) => {
+    const room = rooms[roomCode];
+    if (!room || room.guptochorId !== requesterId || room.guptochorUsed) return;
+
+    const target = room.players.find(p => p.id === targetPlayerId);
+    if (!target || !target.character) return;
+
+    room.guptochorUsed = true;
+    room.nextGuptochorId = targetPlayerId; // The chain: victim becomes next investigator
+
+    // Send result ONLY to the investigator
+    socket.emit("guptochorResult", {
+      targetName: target.name,
+      alliance: target.character.team
+    });
+
+    broadcastRoomUpdate(roomCode);
   });
 
   socket.on("reconnectPlayer", ({ roomCode, playerId }) => {
@@ -413,9 +435,17 @@ io.on("connection", (socket) => {
             room.gameStatus = "OVER";
             room.winner = "EIC (Red)";
           } else {
-            // If game isn't over, prepare for the next round
+            if (room.currentRound === 2) {
+              const r2General = room.players.find(p => p.isGeneral);
+              room.guptochorId = r2General ? r2General.id : null;
+            } else if (room.currentRound > 2) {
+              room.guptochorId = room.nextGuptochorId || null;
+            }
+            
+            room.guptochorUsed = false;
+            room.nextGuptochorId = null; 
+            
             room.currentRound++;
-            // The UI should now trigger "Appoint General" for the new round
           }
         }
         room.voting.active = false;
@@ -494,6 +524,10 @@ io.on("connection", (socket) => {
     room.scoreRed = 0;
     room.roundHistory = []; // Tracks "Green" or "Red" for each round
     room.gameStatus = "ACTIVE";
+
+    room.guptochorId = null;      // Current investigator
+    room.nextGuptochorId = null;  // Target who will be investigator next round
+    room.guptochorUsed = false;   // Prevents multiple uses per round
 
     room.gameStarted = true;
     room.locked = true;
