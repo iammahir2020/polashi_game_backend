@@ -284,9 +284,8 @@ io.on("connection", (socket) => {
     if (!target || !target.character) return;
 
     room.guptochorUsed = true;
-    room.nextGuptochorId = targetPlayerId; // The chain: victim becomes next investigator
+    room.nextGuptochorId = targetPlayerId; 
 
-    // Send result ONLY to the investigator
     socket.emit("guptochorResult", {
       targetName: target.name,
       alliance: target.character.team
@@ -294,7 +293,9 @@ io.on("connection", (socket) => {
 
     io.to(roomCode).emit("notification", {
       message: `🕵️‍♂️ Intelligence Alert: ${requester.name} has deployed a Guptochor to investigate ${target.name}!`,
-      type: "info"
+      type: "info",
+      requesterId: requesterId, // Send these so frontend can filter
+      targetId: targetPlayerId
     });
 
     broadcastRoomUpdate(roomCode);
