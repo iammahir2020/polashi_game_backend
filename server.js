@@ -280,6 +280,7 @@ io.on("connection", (socket) => {
     if (!room || room.guptochorId !== requesterId || room.guptochorUsed) return;
 
     const target = room.players.find(p => p.id === targetPlayerId);
+    const requester = room.players.find(p => p.id === requesterId);
     if (!target || !target.character) return;
 
     room.guptochorUsed = true;
@@ -289,6 +290,11 @@ io.on("connection", (socket) => {
     socket.emit("guptochorResult", {
       targetName: target.name,
       alliance: target.character.team
+    });
+
+    io.to(roomCode).emit("notification", {
+      message: `🕵️‍♂️ Intelligence Alert: ${requester.name} has deployed a Guptochor to investigate ${target.name}!`,
+      type: "info"
     });
 
     broadcastRoomUpdate(roomCode);
