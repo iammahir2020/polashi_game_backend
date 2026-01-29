@@ -185,12 +185,15 @@ function broadcastRoomUpdate(roomCode) {
     const personalizedRoom = {
       ...room,
       proposedTeam: room.proposedTeam || [],
-      players: room.players.map((other) => ({
-        ...other,
-        character: other.id === p.id ? other.character : null,
-      })),
+      players: room.players.map((other) => {
+        const shouldReveal = room.gameStatus === "OVER" || other.id === p.id;
+        return {
+          ...other,
+          character: shouldReveal ? other.character : null,
+        }
+      }),
       // Add the secret intel specifically for this player
-      secretIntel: intelNames
+      secretIntel: room.gameStatus === "OVER" ? [] : intelNames
     };
 
     io.to(p.socketId).emit("roomUpdated", personalizedRoom);
@@ -436,8 +439,13 @@ io.on("connection", (socket) => {
     
           // Check for Overall Match Winner (Best of 3)
           if (room.scoreGreen === 3) {
-            room.gameStatus = "OVER";
-            room.winner = "Nawabs (Green)";
+            room.gameStatus = "MIR_JAFOR_TURN";
+            const mirJafor = room.players.find(p => p.character?.name === "মীর জাফর");
+            io.to(roomCode).emit("notification", {
+              message: `🚨 Critical Alert: The Nawabs have the lead, but ${mirJafor.name} (Mir Jafor) is attempting a final betrayal!`,
+              type: "warning"
+            });
+
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
             room.winner = "EIC (Red)";
@@ -627,6 +635,21 @@ io.on("connection", (socket) => {
     room.turnIndex %= room.players.length;
     broadcastRoomUpdate(roomCode);
   });
+
+  socket.on("attemptAssassination", ({ roomCode, targetId, requesterId }) => {
+    const room = rooms[roomCode];
+    const targetPlayer = room.players.find(p => p.id === targetId);
+    
+    if (targetPlayer.character?.name === "মীর মদন") {
+        room.winner = "East India Company (Red)";
+        room.gameStatus = "OVER";
+    } else {
+        room.winner = "Nawabs (Green)";
+        room.gameStatus = "OVER";
+    }
+    
+    io.to(roomCode).emit("roomUpdated", room);
+});
 
   socket.on("disconnect", () => {
     for (const roomCode in rooms) {
