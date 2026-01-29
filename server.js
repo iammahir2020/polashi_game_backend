@@ -193,7 +193,7 @@ function broadcastRoomUpdate(roomCode) {
         }
       }),
       // Add the secret intel specifically for this player
-      secretIntel: room.gameStatus === "OVER" ? [] : intelNames
+      secretIntel: intelNames
     };
 
     io.to(p.socketId).emit("roomUpdated", personalizedRoom);
