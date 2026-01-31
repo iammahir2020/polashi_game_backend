@@ -23,7 +23,7 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS = 10;
+const MAX_PLAYERS = 20;
 
 const rooms = {};
 
@@ -105,13 +105,38 @@ const fakeHistoricalNames = [
   "সিরাজুল ইসলাম", "বদর আলী", "শওকত জং", "মুর্শিদ কুলি খান"
 ];
 
-const MISSION_REQUIREMENTS = [
-  { players: 3, failsRequired: 1 }, // Round 1
-  { players: 4, failsRequired: 1 }, // Round 2
-  { players: 4, failsRequired: 1 }, // Round 3
-  { players: 5, failsRequired: 2 }, // Round 4 (Special Rule: 2 fails needed)
-  { players: 5, failsRequired: 1 }, // Round 5
-];
+const MISSION_CONFIGS = {
+  5: [
+    { players: 2, failsRequired: 1 }, { players: 3, failsRequired: 1 },
+    { players: 2, failsRequired: 1 }, { players: 3, failsRequired: 1 },
+    { players: 3, failsRequired: 1 }
+  ],
+  6: [
+    { players: 2, failsRequired: 1 }, { players: 3, failsRequired: 1 },
+    { players: 4, failsRequired: 1 }, { players: 3, failsRequired: 1 },
+    { players: 4, failsRequired: 1 }
+  ],
+  7: [
+    { players: 2, failsRequired: 1 }, { players: 3, failsRequired: 1 },
+    { players: 3, failsRequired: 1 }, { players: 4, failsRequired: 2 }, // Round 4: 2 fails needed
+    { players: 4, failsRequired: 1 }
+  ],
+  8: [
+    { players: 3, failsRequired: 1 }, { players: 4, failsRequired: 1 },
+    { players: 4, failsRequired: 1 }, { players: 5, failsRequired: 2 }, // Round 4: 2 fails needed
+    { players: 5, failsRequired: 1 }
+  ],
+  9: [
+    { players: 3, failsRequired: 1 }, { players: 4, failsRequired: 1 },
+    { players: 4, failsRequired: 1 }, { players: 5, failsRequired: 2 }, // Round 4: 2 fails needed
+    { players: 5, failsRequired: 1 }
+  ],
+  10: [
+    { players: 3, failsRequired: 1 }, { players: 4, failsRequired: 1 },
+    { players: 4, failsRequired: 1 }, { players: 5, failsRequired: 2 }, // Round 4: 2 fails needed
+    { players: 5, failsRequired: 1 }
+  ]
+};
 
 
 // --- HELPERS ---
@@ -133,12 +158,15 @@ function broadcastRoomUpdate(roomCode) {
 
   room.players.forEach((p) => {
     const myChar = p.character;
+    const isObserver = room.gameStarted && !room.activePlayerIds?.includes(p.id);
     let intelNames = [];
 
     // Logic to gather names for the "Secret Intel" list
     if (room.gameStarted && myChar) {
       room.players.forEach((other) => {
         if (other.id === p.id) return; // Skip myself
+
+        if (!room.activePlayerIds?.includes(other.id)) return;
 
         // EIC Knowledge (Except Omi Chand)
         if (myChar.team === "East India Company (EIC)" && myChar.id !== 4) {
@@ -186,7 +214,7 @@ function broadcastRoomUpdate(roomCode) {
       ...room,
       proposedTeam: room.proposedTeam || [],
       players: room.players.map((other) => {
-        const shouldReveal = room.gameStatus === "OVER" || other.id === p.id;
+        const shouldReveal = room.gameStatus === "OVER" || other.id === p.id || isObserver;
         return {
           ...other,
           character: shouldReveal ? other.character : null,
@@ -222,6 +250,7 @@ io.on("connection", (socket) => {
         online: true,
         character: null
       }],
+      activePlayerIds: [],
       locked: false,
       gameStarted: false,
       turnIndex: 0,
@@ -334,46 +363,22 @@ io.on("connection", (socket) => {
   socket.on("assignGeneral", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
-
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return socket.emit("errorMessage", "Only the GM can appoint a General.");
-
-    // Initialize history if it doesn't exist
-    if (!room.generalHistory) {
-      room.generalHistory = [];
-    }
-
+    if (!room.generalHistory) { room.generalHistory = []; }
     room.proposedTeam = [];
-
-    // Filter out players who have already been General in this cycle
-    let eligiblePlayers = room.players.filter(p => !room.generalHistory.includes(p.id));
-
-    if (room.generalHistory.length === 0 && eligiblePlayers.length > 1) {
-      eligiblePlayers = eligiblePlayers.filter(p => p.id !== requesterId);
-    }
-
-    // If everyone has been General, reset the cycle
+    // New change: Only pick General from ACTIVE players
+    let eligiblePlayers = room.players.filter(p => room.activePlayerIds.includes(p.id) && !room.generalHistory.includes(p.id));
+    if (room.generalHistory.length === 0 && eligiblePlayers.length > 1) { eligiblePlayers = eligiblePlayers.filter(p => p.id !== requesterId); }
     if (eligiblePlayers.length === 0) {
       room.generalHistory = [];
-      eligiblePlayers = room.players;
+      eligiblePlayers = room.players.filter(p => room.activePlayerIds.includes(p.id));
     }
-
-    // Pick a random player from the ELIGIBLE pool
     const randomIndex = Math.floor(Math.random() * eligiblePlayers.length);
     const newGeneral = eligiblePlayers[randomIndex];
-
-    // Update history
     room.generalHistory.push(newGeneral.id);
-
-    // Update the room state
-    room.players.forEach((p) => {
-      p.isGeneral = (p.id === newGeneral.id);
-    });
-
-    // 1. Send the data update
+    room.players.forEach((p) => { p.isGeneral = (p.id === newGeneral.id); });
     broadcastRoomUpdate(roomCode);
-
-    // 2. Trigger the animation for all clients
     io.to(roomCode).emit("triggerGeneralAnimation", { name: newGeneral.name });
   });
 
@@ -403,16 +408,14 @@ io.on("connection", (socket) => {
 
     if (room.voting.type !== "teamApproval") {
       const isTeamMember = room.proposedTeam?.includes(playerId);
-      if (!isTeamMember) {
-        console.log(`Unauthorized vote attempt by ${playerId}`);
-        return; // Exit if a spectator tries to vote during a secret mission
-      }
+      if (!isTeamMember) return;
     }
 
     room.voting.votes[playerId] = choice;
 
+    // New change: Voting target count now based on ACTIVE players or team size
     const targetCount = room.voting.type === "teamApproval" 
-      ? room.players.length 
+      ? room.activePlayerIds.length 
       : (room.proposedTeam?.length || 0);
 
       if (Object.keys(room.voting.votes).length === targetCount) {
@@ -420,32 +423,28 @@ io.on("connection", (socket) => {
         const noVotes = Object.values(room.voting.votes).filter(v => v === "no").length;
     
         if (room.voting.type === "teamApproval") {
-          // Logic for Council Vote (Majority check)
-          room.voting.result = (noVotes >= room.players.length / 2) ? "No" : "Yes";
+          room.voting.result = (noVotes >= room.activePlayerIds.length / 2) ? "No" : "Yes";
         } else {
-          // --- NEW: MISSION RESOLUTION LOGIC ---
-          const config = MISSION_REQUIREMENTS[room.currentRound - 1];
+          // New change: Lookup requirement from the new MISSION_CONFIGS table
+          const config = MISSION_CONFIGS[room.activePlayerIds.length][room.currentRound - 1];
           
-          // Check if sabotages (noVotes) met the requirement for this specific round
           if (noVotes >= config.failsRequired) {
-            room.voting.result = "No"; // Red Wins Round
+            room.voting.result = "No";
             room.scoreRed++;
             room.roundHistory.push("Red");
           } else {
-            room.voting.result = "Yes"; // Green Wins Round
+            room.voting.result = "Yes";
             room.scoreGreen++;
             room.roundHistory.push("Green");
           }
     
-          // Check for Overall Match Winner (Best of 3)
           if (room.scoreGreen === 3) {
             room.gameStatus = "MIR_JAFOR_TURN";
-            const mirJafor = room.players.find(p => p.character?.name === "মীর জাফর");
+            const mirJafor = room.players.find(p => p.character?.id === 1);
             io.to(roomCode).emit("notification", {
-              message: `🚨 Critical Alert: The Nawabs have the lead, but ${mirJafor.name} (Mir Jafor) is attempting a final betrayal!`,
+              message: `🚨 Critical Alert: The Nawabs have the lead, but ${mirJafor?.name || "Mir Jafor"} is attempting a final betrayal!`,
               type: "warning"
             });
-
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
             room.winner = "EIC (Red)";
@@ -456,16 +455,13 @@ io.on("connection", (socket) => {
             } else if (room.currentRound > 2) {
               room.guptochorId = room.nextGuptochorId || null;
             }
-            
             room.guptochorUsed = false;
             room.nextGuptochorId = null; 
-            
             room.currentRound++;
           }
         }
         room.voting.active = false;
       }
-
     broadcastRoomUpdate(roomCode);
   });
 
@@ -480,70 +476,55 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("startGame", ({ roomCode, requesterId }) => {
+  socket.on("startGame", ({ roomCode, activeIds, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
 
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return socket.emit("errorMessage", "Only GM allowed");
 
-    const playerCount = room.players.length;
-    if (playerCount < 2) return socket.emit("errorMessage", "Minimum 2 players required");
+    // New change: Validate active player count (5-10)
+    const playerCount = activeIds.length;
+    if (playerCount < 5 || playerCount > 10) return socket.emit("errorMessage", "Battalion must be between 5 and 10 players.");
+
+    room.activePlayerIds = activeIds;
 
     const mirJafar = CharacterList.find(c => c.id === 1);
     const mirMadan = CharacterList.find(c => c.id === 8);
     let gameDeck = [mirMadan, mirJafar];
 
-    if (playerCount >= 5) {
-      const teamDistributions = { 5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4] };
-      const [nawabTarget, eicTarget] = teamDistributions[playerCount];
-      const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
-      const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
-      for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
-      for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
-    } else {
-      const remainingPool = shuffle(CharacterList.filter(c => c.id !== 1 && c.id !== 8));
-      while (gameDeck.length < playerCount) gameDeck.push(remainingPool.pop());
-    }
+    // New change: Using your specific requested team distributions
+    const teamDistributions = { 5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4] };
+    const [nawabTarget, eicTarget] = teamDistributions[playerCount];
+    
+    const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
+    const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
+    
+    for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
+    for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
 
     let deck = shuffle([...gameDeck]);
-    let assignments = new Array(playerCount).fill(null);
-    let usedDeckIndices = new Set();
+    let deckIdx = 0;
 
-    room.players.forEach((player, pIdx) => {
-      for (let dIdx = 0; dIdx < deck.length; dIdx++) {
-        if (!usedDeckIndices.has(dIdx) && deck[dIdx].id !== player.lastCharacterId) {
-          assignments[pIdx] = deck[dIdx];
-          usedDeckIndices.add(dIdx);
-          break;
-        }
+    // New change: Assign characters ONLY to active players; others are observers
+    room.players.forEach((player) => {
+      if (activeIds.includes(player.id)) {
+        player.character = deck[deckIdx++];
+        player.isObserver = false;
+      } else {
+        player.character = null;
+        player.isObserver = true;
       }
     });
 
-    room.players.forEach((player, pIdx) => {
-      if (!assignments[pIdx]) {
-        const remainingIdx = deck.findIndex((_, i) => !usedDeckIndices.has(i));
-        assignments[pIdx] = deck[remainingIdx];
-        usedDeckIndices.add(remainingIdx);
-      }
-
-      if (player.character) {
-        player.lastCharacterId = player.character.id;
-      }
-      player.character = assignments[pIdx];
-    });
-
-    // NEW: Initialize Round and Score Tracking
     room.currentRound = 1;
     room.scoreGreen = 0;
     room.scoreRed = 0;
-    room.roundHistory = []; // Tracks "Green" or "Red" for each round
+    room.roundHistory = [];
     room.gameStatus = "ACTIVE";
-
-    room.guptochorId = null;      // Current investigator
-    room.nextGuptochorId = null;  // Target who will be investigator next round
-    room.guptochorUsed = false;   // Prevents multiple uses per round
-
+    room.guptochorId = null;
+    room.nextGuptochorId = null;
+    room.guptochorUsed = false;
     room.gameStarted = true;
     room.locked = true;
     broadcastRoomUpdate(roomCode);
@@ -552,29 +533,27 @@ io.on("connection", (socket) => {
   socket.on("resetGame", ({ roomCode, requesterId }) => {
     const room = rooms[roomCode];
     if (!room) return;
-
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
     if (!gm) return socket.emit("errorMessage", "Only the GM can reset the game.");
-
     room.gameStarted = false;
     room.locked = false;
     room.turnIndex = 0;
     room.voting = null;
     room.generalHistory = [];
-
     room.gameStatus = "WAITING";
-    room.voting = null;
-    room.generalHistory = [];
     room.proposedTeam = [];
-
+    room.activePlayerIds = []; // New change: Clear active list on reset
     room.players.forEach(player => {
-      if (player.character) {
-        player.lastCharacterId = player.character.id;
-      }
       player.character = null;
       player.isGeneral = false;
     });
+    broadcastRoomUpdate(roomCode);
+  });
 
+  socket.on("proposeTeam", ({ roomCode, playerIds }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+    room.proposedTeam = playerIds; 
     broadcastRoomUpdate(roomCode);
   });
 
