@@ -1,8 +1,10 @@
+require('dotenv').config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
+const { GameLogger } = require("./GameLogger"); // Add this line
 
 const app = express();
 
@@ -427,16 +429,26 @@ io.on("connection", (socket) => {
         } else {
           // New change: Lookup requirement from the new MISSION_CONFIGS table
           const config = MISSION_CONFIGS[room.activePlayerIds.length][room.currentRound - 1];
-          
+          let roundResultText = "Success";
           if (noVotes >= config.failsRequired) {
+            roundResultText = "Fail";
             room.voting.result = "No";
             room.scoreRed++;
             room.roundHistory.push("Red");
           } else {
+            roundResultText = "Success";
             room.voting.result = "Yes";
             room.scoreGreen++;
             room.roundHistory.push("Green");
           }
+
+          GameLogger.logRoundResult(room.currentLogId, room.currentRound, {
+            generalName: room.players.find(p => p.isGeneral)?.name,
+            proposedTeamNames: room.players.filter(p => room.proposedTeam.includes(p.id)).map(p => p.name),
+            councilVotes: room.voting.votes,
+            sabotageCount: noVotes,
+            result: roundResultText
+          });
     
           if (room.scoreGreen === 3) {
             room.gameStatus = "MIR_JAFOR_TURN";
@@ -448,6 +460,8 @@ io.on("connection", (socket) => {
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
             room.winner = "EIC (Red)";
+
+            GameLogger.logGameOver(room.currentLogId, room.winner);
           } else {
             if (room.currentRound === 2) {
               const r2General = room.players.find(p => p.isGeneral);
@@ -527,6 +541,9 @@ io.on("connection", (socket) => {
     room.guptochorUsed = false;
     room.gameStarted = true;
     room.locked = true;
+
+    GameLogger.logGameStart(roomCode, room);
+
     broadcastRoomUpdate(roomCode);
   });
 
@@ -626,6 +643,8 @@ io.on("connection", (socket) => {
         room.winner = "Nawabs (Green)";
         room.gameStatus = "OVER";
     }
+
+    GameLogger.logGameOver(room.currentLogId, room.winner);
     
     io.to(roomCode).emit("roomUpdated", room);
 });
