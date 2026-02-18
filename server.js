@@ -239,6 +239,10 @@ app.get("/", (_, res) => {
 io.on("connection", (socket) => {
   console.log("Connected:", socket.id);
 
+  socket.on("getCharacterList", () => {
+    socket.emit("characterListUpdate", CharacterList);
+  });
+
   socket.on("createRoom", ({ name }) => {
     const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const id = uuidv4();
@@ -286,27 +290,55 @@ io.on("connection", (socket) => {
     socket.emit("roomJoined", { roomCode, playerId: id, room: rooms[roomCode] });
   });
 
+  // socket.on("closeRoom", ({ roomCode, requesterId }) => {
+  //   const room = rooms[roomCode];
+  //   if (!room) return;
+
+  //   // Validation: Only GM can dissolve
+  //   const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+  //   if (!gm) return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
+
+  //   // 1. Notify everyone in the room
+  //   io.to(roomCode).emit("roomDissolved");
+
+  //   const roomSockets = io.sockets.adapter.rooms.get(roomCode);
+  //   if (roomSockets) {
+  //     for (const socketId of roomSockets) {
+  //       const s = io.sockets.sockets.get(socketId);
+  //       if (s) s.leave(roomCode);
+  //     }
+  //   }
+
+  //   // 2. Remove room from memory
+  //   delete rooms[roomCode];
+  // });
+
   socket.on("closeRoom", ({ roomCode, requesterId }) => {
+  
     const room = rooms[roomCode];
     if (!room) return;
-
-    // Validation: Only GM can dissolve
+  
     const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
-    if (!gm) return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
-
-    // 1. Notify everyone in the room
-    io.to(roomCode).emit("roomDissolved");
-
-    const roomSockets = io.sockets.adapter.rooms.get(roomCode);
-    if (roomSockets) {
-      for (const socketId of roomSockets) {
-        const s = io.sockets.sockets.get(socketId);
-        if (s) s.leave(roomCode);
-      }
+    if (!gm) {
+      return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
     }
-
-    // 2. Remove room from memory
-    delete rooms[roomCode];
+  
+    // 1. Broadcast to everyone in the room FIRST
+    io.to(roomCode).emit("roomDissolved");
+  
+    // 2. Use a tiny delay before deleting memory and kicking sockets
+    // This ensures the "roomDissolved" packet actually leaves the server buffer
+    setTimeout(() => {
+      const roomSockets = io.sockets.adapter.rooms.get(roomCode);
+      if (roomSockets) {
+        roomSockets.forEach((socketId) => {
+          const clientSocket = io.sockets.sockets.get(socketId);
+          if (clientSocket) clientSocket.leave(roomCode);
+        });
+      }
+      delete rooms[roomCode];
+      console.log(`HQ Dissolved: Room ${roomCode} deleted.`);
+    }, 100); 
   });
 
   socket.on("investigatePlayer", ({ roomCode, targetPlayerId, requesterId }) => {
@@ -490,7 +522,7 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("startGame", ({ roomCode, activeIds, requesterId }) => {
+  socket.on("startGame", ({ roomCode, activeIds, requesterId, selectedCharIds }) => {
     const room = rooms[roomCode];
     if (!room) return;
 
@@ -503,16 +535,20 @@ io.on("connection", (socket) => {
 
     room.activePlayerIds = activeIds;
 
-    const mirJafar = CharacterList.find(c => c.id === 1);
-    const mirMadan = CharacterList.find(c => c.id === 8);
+    const selectedCharacters = selectedCharIds.map(id => 
+      CharacterList.find(c => c.id === id)
+    ).filter(Boolean);
+
+    const mirJafar = selectedCharacters.find(c => c.id === 1);
+    const mirMadan = selectedCharacters.find(c => c.id === 8);
     let gameDeck = [mirMadan, mirJafar];
 
     // New change: Using your specific requested team distributions
     const teamDistributions = { 5: [3, 2], 6: [4, 2], 7: [4, 3], 8: [5, 3], 9: [6, 3], 10: [6, 4] };
     const [nawabTarget, eicTarget] = teamDistributions[playerCount];
     
-    const nawabPool = shuffle(CharacterList.filter(c => c.team === "Nawabs" && c.id !== 8));
-    const eicPool = shuffle(CharacterList.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
+    const nawabPool = shuffle(selectedCharacters.filter(c => c.team === "Nawabs" && c.id !== 8));
+    const eicPool = shuffle(selectedCharacters.filter(c => c.team === "East India Company (EIC)" && c.id !== 1));
     
     for (let i = 0; i < nawabTarget - 1; i++) gameDeck.push(nawabPool.pop());
     for (let i = 0; i < eicTarget - 1; i++) gameDeck.push(eicPool.pop());
