@@ -1,10 +1,13 @@
 require('dotenv').config();
 const express = require("express");
+const mongoose = require('mongoose');
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
-const { GameLogger } = require("./GameLogger"); // Add this line
+const { GameLogger } = require("./GameLogger"); 
+// const { GameLoggerMongo } = require("./GameLoggerMongo");
+const GameLog = require('./models/GameLog');
 
 const app = express();
 
@@ -23,6 +26,10 @@ const io = new Server(server, {
     credentials: true
   }
 });
+
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log("✅ Successfully connected to MongoDB Atlas"))
+  .catch(err => console.error("❌ MongoDB connection error:", err));
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 20;
@@ -481,6 +488,14 @@ io.on("connection", (socket) => {
             sabotageCount: noVotes,
             result: roundResultText
           });
+
+          // GameLoggerMongo.logRoundResult(room.currentLogId, room.currentRound, {
+          //   generalName: room.players.find(p => p.isGeneral)?.name,
+          //   proposedTeamNames: room.players.filter(p => room.proposedTeam.includes(p.id)).map(p => p.name),
+          //   councilVotes: room.voting.votes,
+          //   sabotageCount: noVotes,
+          //   result: roundResultText
+          // });
     
           if (room.scoreGreen === 3) {
             room.gameStatus = "MIR_JAFOR_TURN";
@@ -494,6 +509,7 @@ io.on("connection", (socket) => {
             room.winner = "EIC (Red)";
 
             GameLogger.logGameOver(room.currentLogId, room.winner);
+            // GameLoggerMongo.logGameOver(room.currentLogId, room.winner);
           } else {
             if (room.currentRound === 2) {
               const r2General = room.players.find(p => p.isGeneral);
@@ -579,6 +595,7 @@ io.on("connection", (socket) => {
     room.locked = true;
 
     GameLogger.logGameStart(roomCode, room);
+    // GameLoggerMongo.logGameStart(roomCode, room);
 
     broadcastRoomUpdate(roomCode);
   });
@@ -681,6 +698,7 @@ io.on("connection", (socket) => {
     }
 
     GameLogger.logGameOver(room.currentLogId, room.winner);
+    // GameLoggerMongo.logGameOver(room.currentLogId, room.winner);
     
     io.to(roomCode).emit("roomUpdated", room);
 });
@@ -695,6 +713,108 @@ io.on("connection", (socket) => {
       }
     }
   });
+});
+
+app.get("/api/analytics/win-rates", async (req, res) => {
+  try {
+    const stats = await GameLog.aggregate([
+      { $match: { status: "COMPLETED" } },
+      {
+        $group: {
+          _id: null,
+          totalGames: { $sum: 1 },
+          nawabWins: { 
+            $sum: { $cond: [{ $regexMatch: { input: "$winner", regex: /Nawab/i } }, 1, 0] } 
+          },
+          eicWins: { 
+            $sum: { $cond: [{ $regexMatch: { input: "$winner", regex: /EIC/i } }, 1, 0] } 
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalGames: 1,
+          nawabWins: 1,
+          eicWins: 1,
+          nawabWinPercentage: { 
+            $multiply: [{ $divide: ["$nawabWins", "$totalGames"] }, 100] 
+          },
+          eicWinPercentage: { 
+            $multiply: [{ $divide: ["$eicWins", "$totalGames"] }, 100] 
+          }
+        }
+      }
+    ]);
+    res.json(stats[0] || { totalGames: 0, nawabWins: 0, eicWins: 0 });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch win rates" });
+  }
+});
+
+app.get("/api/analytics/recent-games", async (req, res) => {
+  try {
+    const games = await GameLog.find({ status: "COMPLETED" })
+      .sort({ endTime: -1 })
+      .limit(10)
+      .select("roomCode winner playerCount startTime endTime");
+    
+    res.json(games);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch recent games" });
+  }
+});
+
+app.get("/api/analytics/test", async (req, res) => {
+  console.log("Test Request Received");
+  try {
+    // Just fetch the last 1 log to see if connection works
+    const count = await GameLog.countDocuments();
+    const lastLog = await GameLog.findOne().sort({ startTime: -1 });
+    
+    res.json({
+      success: true,
+      totalLogs: count,
+      latestLogId: lastLog ? lastLog.logId : "No logs found"
+    });
+  } catch (err) {
+    console.error("Test Error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/analytics/all-players", async (req, res) => {
+  console.log("Analytics Request: Fetching all unique players...");
+  try {
+    const players = await GameLog.aggregate([
+      // 1. Only look at completed games
+      { $match: { status: "COMPLETED" } },
+      
+      // 2. Convert identities Map to Array
+      { $project: { identities: { $objectToArray: "$identities" } } },
+      
+      // 3. Flatten the array of players
+      { $unwind: "$identities" },
+      
+      // 4. Group by name to get unique names
+      {
+        $group: {
+          _id: "$identities.v.name"
+        }
+      },
+      
+      // 5. Sort alphabetically
+      { $sort: { _id: 1 } }
+    ]);
+    
+    // Map the result to a clean array of strings
+    const playerNames = players.map(p => p._id);
+    
+    res.json(playerNames);
+  } catch (err) {
+    console.error("Analytics Error:", err);
+    res.status(500).json({ error: "Failed to fetch players" });
+  }
 });
 
 // server.listen(PORT, '0.0.0.0', () => {
