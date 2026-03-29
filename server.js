@@ -171,7 +171,7 @@ function broadcastRoomUpdate(roomCode) {
     let intelNames = [];
 
     // Logic to gather names for the "Secret Intel" list
-    if (room.gameStarted && myChar) {
+    if (room.gameStarted && myChar && !room.disableSecretIntelligence) {
       room.players.forEach((other) => {
         if (other.id === p.id) return; // Skip myself
 
@@ -270,6 +270,7 @@ io.on("connection", (socket) => {
       guptochorId: null,
       guptochorUsed: false,
       nextGuptochorId: null,
+      disableSecretIntelligence: false,
     };
 
     socket.join(roomCode);
@@ -538,7 +539,7 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("startGame", ({ roomCode, activeIds, requesterId, selectedCharIds }) => {
+  socket.on("startGame", ({ roomCode, activeIds, requesterId, selectedCharIds, disableSecretIntelligence }) => {
     const room = rooms[roomCode];
     if (!room) return;
 
@@ -548,6 +549,8 @@ io.on("connection", (socket) => {
     // New change: Validate active player count (5-10)
     const playerCount = activeIds.length;
     if (playerCount < 5 || playerCount > 10) return socket.emit("errorMessage", "Battalion must be between 5 and 10 players.");
+
+    room.disableSecretIntelligence = !!disableSecretIntelligence;
 
     room.activePlayerIds = activeIds;
 
@@ -613,6 +616,7 @@ io.on("connection", (socket) => {
     room.gameStatus = "WAITING";
     room.proposedTeam = [];
     room.activePlayerIds = []; // New change: Clear active list on reset
+    room.disableSecretIntelligence = false;
     room.players.forEach(player => {
       player.character = null;
       player.isGeneral = false;
@@ -620,12 +624,12 @@ io.on("connection", (socket) => {
     broadcastRoomUpdate(roomCode);
   });
 
-  socket.on("proposeTeam", ({ roomCode, playerIds }) => {
-    const room = rooms[roomCode];
-    if (!room) return;
-    room.proposedTeam = playerIds; 
-    broadcastRoomUpdate(roomCode);
-  });
+  // socket.on("proposeTeam", ({ roomCode, playerIds }) => {
+  //   const room = rooms[roomCode];
+  //   if (!room) return;
+  //   room.proposedTeam = playerIds; 
+  //   broadcastRoomUpdate(roomCode);
+  // });
 
   socket.on("proposeTeam", ({ roomCode, playerIds }) => {
     const room = rooms[roomCode];
@@ -642,6 +646,18 @@ io.on("connection", (socket) => {
     if (!gm) return socket.emit("errorMessage", "Only GM allowed");
 
     room.locked = locked;
+    broadcastRoomUpdate(roomCode);
+  });
+
+  socket.on("setDisableSecretIntelligence", ({ roomCode, disableSecretIntelligence, requesterId }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const gm = room.players.find(p => p.id === requesterId && p.isGameMaster);
+    if (!gm) return socket.emit("errorMessage", "Only GM allowed");
+    if (room.gameStarted) return socket.emit("errorMessage", "Secret Intel setting can only be changed before the game starts.");
+
+    room.disableSecretIntelligence = !!disableSecretIntelligence;
     broadcastRoomUpdate(roomCode);
   });
 
