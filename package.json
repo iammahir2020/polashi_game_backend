@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
@@ -18,9 +18,13 @@
     "mongodb": "^7.1.0",
     "mongoose": "^9.2.3",
     "socket.io": "^4.8.3",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "zod": "^4.6.5"
   },
   "engines": {
     "node": "20.x"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }
