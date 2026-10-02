@@ -72,7 +72,7 @@ function computeSecretIntel(room, p) {
 }
 
 // Server-only fields that must never reach a client.
-const PRIVATE_ROOM_KEYS = new Set(["players", "voting", "currentLogId", "generalHistory", "lastActivity"]);
+const PRIVATE_ROOM_KEYS = new Set(["players", "voting", "currentLogId", "generalHistory", "lastActivity", "creatorIp"]);
 
 // Votes as clients may see them. While a vote is open nobody sees anyone's
 // choice, only who has voted (`true`), which the client already understands.

@@ -19,6 +19,11 @@ const intFromEnv = (name, fallback) => {
   const n = parseInt(process.env[name], 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
+// Like intFromEnv, but 0 is allowed (it switches that cap off).
+const capFromEnv = (name, fallback) => {
+  const n = parseInt(process.env[name], 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
 
 if (process.env.MONGODB_URI) {
   mongoose.connect(process.env.MONGODB_URI)
@@ -32,6 +37,9 @@ const { httpServer } = createGameServer({
   logger: GameLogger,
   allowedOrigins: readAllowedOrigins(),
   maxRooms: intFromEnv("MAX_ROOMS", 1000),
+  maxConnections: capFromEnv("MAX_CONNECTIONS", 5000),
+  maxSocketsPerIp: capFromEnv("MAX_SOCKETS_PER_IP", 40),
+  maxRoomsPerIp: capFromEnv("MAX_ROOMS_PER_IP", 10),
   configureApp: registerAnalyticsRoutes,
 });
 

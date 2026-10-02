@@ -22,6 +22,7 @@ const {
   tokensMatch,
 } = require("./room");
 const { normalizeName, uniqueName, schemas } = require("./validation");
+const { clientIp, createBucket, createHttpLimiter } = require("./limits");
 
 const DEFAULT_ORIGINS = [
   "https://the-great-polashi-game.vercel.app",
@@ -46,7 +47,14 @@ const noopLogger = {
  *   maxPlayers    players per room (default 20)
  *   maxRooms      live rooms on this instance (default 1000)
  *   rateLimit     { capacity, refillPerSec } per socket
+ *   ipRateLimit   { capacity, refillPerSec } shared by all sockets from one address
+ *   maxConnections     open connections on this instance (default 5000, 0 = no cap)
+ *   maxSocketsPerIp    open connections from one address (default 40, 0 = no cap)
+ *   maxRoomsPerIp      live rooms created from one address (default 10, 0 = no cap)
+ *   httpLimit     { max, windowMs } HTTP requests per address (default 120 a minute)
  *   roomIdleMs    delete rooms with nobody online after this long
+ *   loneRoomIdleMs     delete unstarted rooms with at most one player and nobody
+ *                      online after this long (default 10 minutes)
  *   roomMaxIdleMs delete any room untouched for this long
  *   sweepEveryMs  how often to sweep idle rooms
  *   configureApp(app)  hook to add extra HTTP routes
@@ -58,9 +66,17 @@ function createGameServer(options = {}) {
   const MAX_PLAYERS = options.maxPlayers || 20;
   const MAX_ROOMS = options.maxRooms || 1000;
   const RATE = { capacity: 30, refillPerSec: 15, ...(options.rateLimit || {}) };
+  // Generous enough for a whole party on one Wi-Fi network (up to 20 players
+  // share an address), small enough that one machine can't flood the server.
+  const IP_RATE = { capacity: 120, refillPerSec: 40, ...(options.ipRateLimit || {}) };
+  const MAX_CONNECTIONS = options.maxConnections ?? 5000;
+  const MAX_SOCKETS_PER_IP = options.maxSocketsPerIp ?? 40;
+  const MAX_ROOMS_PER_IP = options.maxRoomsPerIp ?? 10;
+  const HTTP_LIMIT = { max: 120, windowMs: 60 * 1000, ...(options.httpLimit || {}) };
   const ROOM_IDLE_MS = options.roomIdleMs ?? 30 * 60 * 1000;
+  const LONE_ROOM_IDLE_MS = options.loneRoomIdleMs ?? 10 * 60 * 1000;
   const ROOM_MAX_IDLE_MS = options.roomMaxIdleMs ?? 12 * 60 * 60 * 1000;
-  const SWEEP_EVERY_MS = options.sweepEveryMs ?? 5 * 60 * 1000;
+  const SWEEP_EVERY_MS = options.sweepEveryMs ?? 60 * 1000;
 
   const allowedOrigins = options.allowedOrigins || DEFAULT_ORIGINS;
   const allowAnyOrigin = allowedOrigins.includes("*");
@@ -73,6 +89,24 @@ function createGameServer(options = {}) {
     res.set("Referrer-Policy", "no-referrer");
     next();
   });
+  const httpLimiter = createHttpLimiter({ ...HTTP_LIMIT, keyOf: (req) => clientIp(req).ip });
+  app.use(httpLimiter.middleware);
+
+  // Open connections per address, and one shared event bucket per address.
+  const ipConnections = new Map();
+  const ipBuckets = new Map();
+  let loggedIpSource = false;
+
+  // Refuses a new connection when the instance or the address is at its cap.
+  // The Origin check stops other websites; it can't stop a script, which sends
+  // any Origin it likes, so the caps are what keep one machine from opening
+  // thousands of sockets and exhausting the instance's memory.
+  function connectionAllowed(req) {
+    if (MAX_CONNECTIONS && io.engine.clientsCount >= MAX_CONNECTIONS) return false;
+    const { ip } = clientIp(req);
+    if (MAX_SOCKETS_PER_IP && (ipConnections.get(ip) || 0) >= MAX_SOCKETS_PER_IP) return false;
+    return true;
+  }
   app.use(
     cors({
       origin: (origin, cb) => cb(null, !origin || isAllowedOrigin(origin)),
@@ -91,9 +125,31 @@ function createGameServer(options = {}) {
     // site can't open a socket to this server from a visitor's browser.
     allowRequest: (req, cb) => {
       const origin = req.headers.origin;
-      cb(null, !origin || isAllowedOrigin(origin));
+      if (origin && !isAllowedOrigin(origin)) return cb("Origin not allowed", false);
+      if (!connectionAllowed(req)) return cb("Too many connections", false);
+      cb(null, true);
     },
     maxHttpBufferSize: 16 * 1024,
+  });
+
+  // Counted at the transport level, so a client that completes the handshake
+  // but never joins the game still counts against its address.
+  io.engine.on("connection", (rawSocket) => {
+    const { ip, source } = clientIp(rawSocket.request);
+    if (!loggedIpSource) {
+      loggedIpSource = true;
+      log.info(`Client addresses are read from: ${source}`);
+    }
+    ipConnections.set(ip, (ipConnections.get(ip) || 0) + 1);
+    rawSocket.once("close", () => {
+      const left = (ipConnections.get(ip) || 1) - 1;
+      if (left > 0) {
+        ipConnections.set(ip, left);
+      } else {
+        ipConnections.delete(ip);
+        ipBuckets.delete(ip);
+      }
+    });
   });
 
   // No prototype: room codes come from clients and must never hit Object.prototype keys.
@@ -180,7 +236,11 @@ function createGameServer(options = {}) {
     for (const [code, room] of Object.entries(rooms)) {
       const idleFor = now - (room.lastActivity || 0);
       const anyoneOnline = room.players.some((p) => p.online);
-      if (idleFor > ROOM_MAX_IDLE_MS || (!anyoneOnline && idleFor > ROOM_IDLE_MS)) {
+      // A room nobody else ever joined, whose host has gone, is let go sooner,
+      // so abandoned (or mass-created) rooms don't hold slots for half an hour.
+      const lone = !room.gameStarted && room.players.length <= 1;
+      const idleLimit = lone ? Math.min(LONE_ROOM_IDLE_MS, ROOM_IDLE_MS) : ROOM_IDLE_MS;
+      if (idleFor > ROOM_MAX_IDLE_MS || (!anyoneOnline && idleFor > idleLimit)) {
         for (const p of room.players) if (p.socketId) unbindPlayer(p.socketId, code, p.id);
         delete rooms[code];
       }
@@ -197,18 +257,19 @@ function createGameServer(options = {}) {
 
   // --- Sockets ------------------------------------------------------------------
   io.on("connection", (socket) => {
-    const bucket = { tokens: RATE.capacity, last: Date.now(), warnedAt: 0 };
+    const { ip } = clientIp(socket.request);
+    const takeSocketToken = createBucket(RATE);
+    if (!ipBuckets.has(ip)) ipBuckets.set(ip, createBucket(IP_RATE));
+    const takeIpToken = ipBuckets.get(ip);
+    let warnedAt = 0;
 
+    // Each socket has its own budget, and all sockets from one address share a
+    // second one, so opening more sockets doesn't buy a faster flood.
     function allowEvent() {
+      if (takeSocketToken() && takeIpToken()) return true;
       const now = Date.now();
-      bucket.tokens = Math.min(RATE.capacity, bucket.tokens + ((now - bucket.last) / 1000) * RATE.refillPerSec);
-      bucket.last = now;
-      if (bucket.tokens >= 1) {
-        bucket.tokens -= 1;
-        return true;
-      }
-      if (now - bucket.warnedAt > 5000) {
-        bucket.warnedAt = now;
+      if (now - warnedAt > 5000) {
+        warnedAt = now;
         socket.emit("errorMessage", "Too many actions. Please slow down.");
       }
       return false;
@@ -239,8 +300,13 @@ function createGameServer(options = {}) {
     on("createRoom", schemas.createRoom, ({ name }) => {
       const cleanName = normalizeName(name);
       if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
-      if (Object.keys(rooms).length >= MAX_ROOMS) {
+      const liveRooms = Object.values(rooms);
+      if (liveRooms.length >= MAX_ROOMS) {
         return socket.emit("errorMessage", "The server is full right now. Please try again later.");
+      }
+      // One address can't take every room slot on the server.
+      if (MAX_ROOMS_PER_IP && liveRooms.filter((r) => r.creatorIp === ip).length >= MAX_ROOMS_PER_IP) {
+        return socket.emit("errorMessage", "Too many rooms have been opened from your network. Close one or try again later.");
       }
 
       const roomCode = generateRoomCode((code) => !!rooms[code]);
@@ -265,6 +331,7 @@ function createGameServer(options = {}) {
         nextGuptochorId: null,
         disableSecretIntelligence: false,
         lastActivity: Date.now(),
+        creatorIp: ip, // server-only, for the per-address room cap
       };
 
       socket.join(roomCode);
@@ -753,6 +820,7 @@ function createGameServer(options = {}) {
 
   function close() {
     if (sweepTimer) clearInterval(sweepTimer);
+    httpLimiter.stop();
     io.close();
     return new Promise((resolve) => httpServer.close(() => resolve()));
   }
