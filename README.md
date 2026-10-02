@@ -5,7 +5,8 @@ online adaptation of Playground Inc.'s Polashi board game. Node 20, Express 5, S
 frontend lives in [polashi_game_frontend](https://github.com/iammahir2020/polashi_game_frontend).
 
 Game state is held in memory on a single instance. Finished games are logged to Firestore
-(`GameLogger.js`); the read-only statistics endpoints query MongoDB (`models/GameLog.js`).
+(`GameLogger.js`). The public statistics endpoints are switched off (commented out in
+`routes/analytics.js`); the admin-only player list still queries MongoDB (`models/GameLog.js`).
 
 ## Layout
 
@@ -15,6 +16,7 @@ Game state is held in memory on a single instance. Finished games are logged to 
 | `game/createGameServer.js` | Express + Socket.IO server and every socket event handler |
 | `game/room.js` | Per-player room view (what each client may see), secret intel, codes and tokens |
 | `game/validation.js` | Payload schemas (zod) and player-name rules |
+| `game/limits.js` | Client address, token buckets and the HTTP rate limiter |
 | `game/constants.js` | Characters, decoy names, mission sizes, team distribution |
 | `routes/analytics.js` | `/api/analytics/*` |
 | `test/` | `npm test` (Node's built-in test runner) |
@@ -29,13 +31,16 @@ Game state is held in memory on a single instance. Finished games are logged to 
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | yes | Service account for game logs |
 | `ADMIN_TOKEN` | no | At least 16 characters. Enables `GET /api/analytics/all-players` with `Authorization: Bearer <token>` |
 | `MAX_ROOMS` | no | Live rooms allowed on this instance (default 1000, sized for 512 MB of RAM; see below) |
+| `MAX_CONNECTIONS` | no | Open connections allowed on this instance (default 5000; `0` turns the cap off) |
+| `MAX_SOCKETS_PER_IP` | no | Open connections from one address (default 40, enough for a full party on one Wi-Fi; `0` = off) |
+| `MAX_ROOMS_PER_IP` | no | Live rooms created from one address (default 10; `0` = off) |
 
 ## Scripts
 
 ```sh
 npm ci
 npm start   # node server.js
-npm test    # 33 tests: full games, security checks, validation; no external services needed
+npm test    # 41 tests: full games, security checks, validation; no external services needed
 ```
 
 ## Security model
@@ -50,7 +55,15 @@ npm test    # 33 tests: full games, security checks, validation; no external ser
 - Every event payload is validated; handlers can't crash the process. Each socket is rate limited,
   messages are capped at 16 KB, rooms are capped and swept when abandoned (nobody online for 30
   minutes, or no activity for 12 hours).
-- The WebSocket upgrade checks the `Origin` header against `CLIENT_URL`.
+- The WebSocket upgrade checks the `Origin` header against `CLIENT_URL`. That stops other websites,
+  not scripts (which send any Origin), so connections are also capped per address and in total.
+- Per address: at most `MAX_SOCKETS_PER_IP` open connections, `MAX_ROOMS_PER_IP` live rooms, one
+  event budget shared by all of its sockets, and 120 HTTP requests a minute. A room nobody joined
+  is removed 10 minutes after its host goes offline instead of 30.
+- The address is read from `CF-Connecting-IP`, which Render's Cloudflare edge always overwrites, so
+  it can't be forged. On startup the first connection logs `Client addresses are read from: ...`;
+  on Render it should say `cf-connecting-ip`. If it says anything else, every visitor may share one
+  address: raise or switch off the per-address caps until that's resolved.
 
 ## Deploying with the frontend
 

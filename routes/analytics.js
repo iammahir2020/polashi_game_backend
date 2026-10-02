@@ -1,8 +1,8 @@
 const crypto = require("crypto");
 const GameLog = require("../models/GameLog");
 
-// Read-only game statistics. Aggregates are public; the list of every player
-// name ever logged is personal data, so it needs ADMIN_TOKEN (sent as
+// Read-only game statistics. The public aggregates are disabled (below); the
+// list of every player name ever logged is personal data, so it needs ADMIN_TOKEN (sent as
 // "Authorization: Bearer <token>") and is disabled when no token is configured.
 function requireAdmin(req, res, next) {
   const expected = process.env.ADMIN_TOKEN;
@@ -18,6 +18,11 @@ function requireAdmin(req, res, next) {
 }
 
 function registerAnalyticsRoutes(app) {
+  // Disabled for now: the public statistics endpoints aren't used by the site,
+  // and each request runs a MongoDB query (or, with the database unreachable,
+  // hangs for 10 s) for anyone who asks. Uncomment to bring them back, and
+  // consider caching the results when you do.
+  /*
   app.get("/api/analytics/win-rates", async (req, res) => {
     try {
       const stats = await GameLog.aggregate([
@@ -67,6 +72,7 @@ function registerAnalyticsRoutes(app) {
       res.status(500).json({ error: "Failed to fetch recent games" });
     }
   });
+  */
 
   app.get("/api/analytics/all-players", requireAdmin, async (req, res) => {
     try {
