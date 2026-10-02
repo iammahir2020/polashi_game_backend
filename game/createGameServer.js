@@ -96,7 +96,8 @@ function createGameServer(options = {}) {
     maxHttpBufferSize: 16 * 1024,
   });
 
-  const rooms = {};
+  // No prototype: room codes come from clients and must never hit Object.prototype keys.
+  const rooms = Object.create(null);
 
   // socket.id -> { current: { roomCode, playerId } | null, memberships: Map<"room|player", {...}> }
   const sessions = new Map();
@@ -271,7 +272,8 @@ function createGameServer(options = {}) {
       sendJoined(socket, roomCode, rooms[roomCode].players[0]);
     });
 
-    on("joinRoom", schemas.joinRoom, ({ roomCode, name }) => {
+    on("joinRoom", schemas.joinRoom, ({ roomCode: rawCode, name }) => {
+      const roomCode = rawCode.trim().toUpperCase();
       const room = rooms[roomCode];
       if (!room) return socket.emit("errorMessage", "Room not found");
       if (room.locked) return socket.emit("errorMessage", "Room is locked");

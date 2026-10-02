@@ -29,8 +29,8 @@ test("uniqueName appends a number on a case-insensitive clash", () => {
 
 test("schemas accept what the client sends and reject junk", () => {
   assert.ok(schemas.joinRoom.safeParse({ roomCode: "ab12cd", name: "x" }).success);
-  assert.equal(schemas.joinRoom.parse({ roomCode: " ab12cd ", name: "x" }).roomCode, "AB12CD");
-  assert.ok(!schemas.joinRoom.safeParse({ roomCode: "../../x", name: "x" }).success);
+  assert.equal(schemas.leaveRoom.parse({ roomCode: " ab12cd " }).roomCode, "AB12CD");
+  assert.ok(!schemas.reconnectPlayer.safeParse({ roomCode: "../../x", playerId: "p" }).success);
   assert.ok(!schemas.castVote.safeParse({ roomCode: "AB12CD", choice: "maybe" }).success);
   assert.ok(schemas.startGame.safeParse({ roomCode: "AB12CD", activeIds: ["a"], selectedCharIds: [1, 8], requesterId: "x", disableSecretIntelligence: false }).success);
   assert.ok(!schemas.startGame.safeParse({ roomCode: "AB12CD", activeIds: new Array(50).fill("a"), selectedCharIds: [] }).success);

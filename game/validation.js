@@ -49,7 +49,8 @@ const shortText = z.string().max(200);
 // longer trusted: the acting player always comes from the socket's session.
 const schemas = {
   createRoom: z.object({ name: shortText }),
-  joinRoom: z.object({ roomCode, name: shortText }),
+  // Loose on purpose: a mistyped code should get "Room not found", not silence.
+  joinRoom: z.object({ roomCode: z.string().max(64), name: shortText }),
   reconnectPlayer: z.object({ roomCode, playerId: id, reconnectToken: z.string().max(128).optional() }),
   leaveRoom: z.object({ roomCode, playerId: id.optional() }),
   closeRoom: z.object({ roomCode }),

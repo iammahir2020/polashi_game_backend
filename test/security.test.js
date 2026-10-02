@@ -300,6 +300,17 @@ test("browsers on other sites cannot open a socket", async (t) => {
   assert.equal(ok.connected, true);
 });
 
+test("a mistyped or odd room code gets a clear answer", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const s = await srv.client();
+  for (const code of ["AB", "toString", "__proto__", "ab cd!"]) {
+    const err = next(s, "errorMessage");
+    s.emit("joinRoom", { roomCode: code, name: "Ann" });
+    assert.equal(await err, "Room not found");
+  }
+});
+
 test("the room cap refuses new rooms instead of running out of memory", async (t) => {
   const srv = await startServer({ maxRooms: 1 });
   t.after(() => srv.stop());
