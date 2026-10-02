@@ -44,7 +44,7 @@ const noopLogger = {
  *   logger        game log sink ({ logGameStart, logRoundResult, logGameOver })
  *   allowedOrigins  browser origins allowed to connect ("*" allows all)
  *   maxPlayers    players per room (default 20)
- *   maxRooms      live rooms on this instance (default 5000)
+ *   maxRooms      live rooms on this instance (default 1000)
  *   rateLimit     { capacity, refillPerSec } per socket
  *   roomIdleMs    delete rooms with nobody online after this long
  *   roomMaxIdleMs delete any room untouched for this long
@@ -56,7 +56,7 @@ function createGameServer(options = {}) {
   const logger = options.logger || noopLogger;
   const log = options.log || console;
   const MAX_PLAYERS = options.maxPlayers || 20;
-  const MAX_ROOMS = options.maxRooms || 5000;
+  const MAX_ROOMS = options.maxRooms || 1000;
   const RATE = { capacity: 30, refillPerSec: 15, ...(options.rateLimit || {}) };
   const ROOM_IDLE_MS = options.roomIdleMs ?? 30 * 60 * 1000;
   const ROOM_MAX_IDLE_MS = options.roomMaxIdleMs ?? 12 * 60 * 60 * 1000;

@@ -28,7 +28,7 @@ Game state is held in memory on a single instance. Finished games are logged to 
 | `MONGODB_URI` | for analytics | MongoDB connection string |
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | yes | Service account for game logs |
 | `ADMIN_TOKEN` | no | At least 16 characters. Enables `GET /api/analytics/all-players` with `Authorization: Bearer <token>` |
-| `MAX_ROOMS` | no | Live rooms allowed on this instance (default 5000) |
+| `MAX_ROOMS` | no | Live rooms allowed on this instance (default 1000, sized for 512 MB of RAM; see below) |
 
 ## Scripts
 
@@ -57,3 +57,19 @@ npm test    # 33 tests: full games, security checks, validation; no external ser
 Deploy the frontend first, then this server. The current frontend stores and sends the reconnect
 token; an older frontend doesn't, so after this server is deployed a player on an old tab who
 refreshes mid-game is asked to join again instead of being put back in their seat.
+
+## Capacity
+
+Measured locally with bots playing complete 7-player games over real sockets (Firestore and
+MongoDB stubbed out):
+
+| Concurrent games | Connected players | Server memory (RSS) |
+|---|---|---|
+| 200 | 1,400 | ~150 MB idle, ~320 MB peak |
+| 1,000 | 7,000 | ~300 MB idle, ~480-500 MB peak |
+
+A whole game costs about 20-35 ms of server CPU, so CPU isn't the limit; memory is (about 30 KB per
+connected player on top of a ~90 MB baseline). On a 512 MB instance plan for roughly 500-700
+simultaneous games and treat ~1,000 as the ceiling, which is why `MAX_ROOMS` defaults to 1000. Rooms
+live in one process's memory, so the server can't be scaled across instances as it stands, and a
+restart or deploy ends every game in progress.

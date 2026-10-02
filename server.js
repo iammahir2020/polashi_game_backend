@@ -31,7 +31,7 @@ if (process.env.MONGODB_URI) {
 const { httpServer } = createGameServer({
   logger: GameLogger,
   allowedOrigins: readAllowedOrigins(),
-  maxRooms: intFromEnv("MAX_ROOMS", 5000),
+  maxRooms: intFromEnv("MAX_ROOMS", 1000),
   configureApp: registerAnalyticsRoutes,
 });
 
