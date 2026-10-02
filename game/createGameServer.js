@@ -2,7 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
-const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto");
 
 const {
   CharacterList,
@@ -12,6 +12,8 @@ const {
   EIC_TEAM,
   MIR_JAFOR_ID,
   MIR_MADAN_ID,
+  WINNER_NAWABS,
+  WINNER_EIC,
 } = require("./constants");
 const {
   shuffle,
@@ -310,7 +312,7 @@ function createGameServer(options = {}) {
       }
 
       const roomCode = generateRoomCode((code) => !!rooms[code]);
-      const id = uuidv4();
+      const id = crypto.randomUUID();
 
       rooms[roomCode] = {
         players: [{
@@ -325,7 +327,6 @@ function createGameServer(options = {}) {
         activePlayerIds: [],
         locked: false,
         gameStarted: false,
-        turnIndex: 0,
         guptochorId: null,
         guptochorUsed: false,
         nextGuptochorId: null,
@@ -349,7 +350,7 @@ function createGameServer(options = {}) {
       const cleanName = normalizeName(name);
       if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
 
-      const id = uuidv4();
+      const id = crypto.randomUUID();
       const player = {
         id,
         name: uniqueName(cleanName, room.players.map((p) => p.name)),
@@ -523,7 +524,11 @@ function createGameServer(options = {}) {
         if (!isTeamMember) return;
       }
 
-      room.voting.votes[playerId] = choice;
+      // Nawabs can't sabotage: a Nawab's mission vote always counts as a
+      // success, whatever was sent. The client shows them the choice and
+      // converts it too, but only the server's count can be trusted.
+      const isNawabOnMission = room.voting.type === "missionOutcome" && actor.player.character?.team === NAWAB_TEAM;
+      room.voting.votes[playerId] = isNawabOnMission ? "yes" : choice;
       touch(room);
 
       // Voting target count based on ACTIVE players or team size
@@ -569,7 +574,7 @@ function createGameServer(options = {}) {
             });
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
-            room.winner = "EIC (Red)";
+            room.winner = WINNER_EIC;
             safeLog(logger.logGameOver, room.currentLogId, room.winner);
           } else {
             if (room.currentRound === 2) {
@@ -674,7 +679,6 @@ function createGameServer(options = {}) {
       if (!isHost(gm)) return socket.emit("errorMessage", "Only the GM can reset the game.");
       room.gameStarted = false;
       room.locked = false;
-      room.turnIndex = 0;
       room.voting = null;
       room.generalHistory = [];
       room.gameStatus = "WAITING";
@@ -749,7 +753,6 @@ function createGameServer(options = {}) {
       }
 
       if (wasGM) room.players[0].isGameMaster = true;
-      room.turnIndex %= room.players.length;
       touch(room);
 
       broadcastRoomUpdate(roomCode);
@@ -767,13 +770,11 @@ function createGameServer(options = {}) {
 
       const target = room.players[targetIndex];
       if (target.socketId) {
-        io.to(target.socketId).emit("kicked");
         io.sockets.sockets.get(target.socketId)?.leave(roomCode);
         unbindPlayer(target.socketId, roomCode, target.id);
       }
 
       room.players.splice(targetIndex, 1);
-      room.turnIndex %= room.players.length;
       touch(room);
       broadcastRoomUpdate(roomCode);
     });
@@ -789,13 +790,8 @@ function createGameServer(options = {}) {
       const targetPlayer = room.players.find(p => p.id === targetId);
       if (!targetPlayer) return;
 
-      if (targetPlayer.character?.name === "মীর মদন") {
-        room.winner = "East India Company (Red)";
-        room.gameStatus = "OVER";
-      } else {
-        room.winner = "Nawabs (Green)";
-        room.gameStatus = "OVER";
-      }
+      room.winner = targetPlayer.character?.id === MIR_MADAN_ID ? WINNER_EIC : WINNER_NAWABS;
+      room.gameStatus = "OVER";
       touch(room);
 
       safeLog(logger.logGameOver, room.currentLogId, room.winner);

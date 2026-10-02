@@ -76,7 +76,6 @@ test("host-only actions ignore a spoofed requesterId", async (t) => {
   attacker.socket.emit("kickPlayer", { ...spoof, targetPlayerId: victim.id });
   attacker.socket.emit("setRoomLock", { ...spoof, locked: true });
   attacker.socket.emit("closeRoom", spoof);
-  assert.equal(await silence(victim.socket, "kicked"), true);
   assert.equal(await silence(host.socket, "roomDissolved"), true);
   assert.equal(srv.rooms[setup.roomCode].locked, false);
   assert.equal(srv.rooms[setup.roomCode].players.length, 5);
@@ -121,7 +120,12 @@ test("votes stay hidden while open; mission choices are never tied to a player",
   const setup = await setupRoom(srv, 5);
   await startGame(srv, setup);
   const room = srv.rooms[setup.roomCode];
-  const [host, a, b] = setup.players;
+  const host = setup.players[0];
+  // The sabotage must come from a Company player (a Nawab's "no" counts as a
+  // success). Of 5 players 2 are Company, so at least one isn't the host.
+  const isEic = (p) => room.players.find((x) => x.id === p.id).character.team !== "Nawabs";
+  const a = setup.players.find((p) => p !== host && isEic(p));
+  const b = setup.players.find((p) => p !== host && p !== a);
   room.players.find((p) => p.id === host.id).isGeneral = true;
   room.proposedTeam = [a.id, b.id];
   room.voting = { active: false, votes: {}, result: "Yes", type: "teamApproval" };
@@ -319,4 +323,73 @@ test("the room cap refuses new rooms instead of running out of memory", async (t
   const err = next(s, "errorMessage");
   s.emit("createRoom", { name: "Late" });
   assert.match(await err, /server is full/i);
+});
+
+// Opens a secret mission vote for `team` directly in the server's room state,
+// as if the council had just approved it.
+async function openMissionVote(srv, setup, team) {
+  const room = srv.rooms[setup.roomCode];
+  const host = setup.players[0];
+  room.players.find((p) => p.id === host.id).isGeneral = true;
+  room.proposedTeam = team.map((p) => p.id);
+  room.voting = { active: false, votes: {}, result: "Yes", type: "teamApproval" };
+  const update = next(host.socket, "roomUpdated", (r) => r.voting && r.voting.active && r.voting.type === "missionOutcome");
+  host.socket.emit("startSecretVote", { roomCode: setup.roomCode });
+  await update;
+  return room;
+}
+
+test("a Nawab's sabotage counts as a success, whatever the client sends", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const setup = await setupRoom(srv, 5);
+  await startGame(srv, setup);
+  const roles = srv.rooms[setup.roomCode].players;
+  const nawabs = setup.players.filter((p) => roles.find((r) => r.id === p.id).character.team === "Nawabs").slice(0, 2);
+  await openMissionVote(srv, setup, nawabs);
+
+  // A modified client sends "no" for both Nawabs. The official client turns
+  // a Nawab's SABOTAGE into a success before sending; the server now does too.
+  const done = next(setup.players[0].socket, "roomUpdated", (r) => r.voting && !r.voting.active);
+  nawabs.forEach((p) => p.socket.emit("castVote", { roomCode: setup.roomCode, choice: "no" }));
+  const after = await done;
+  assert.equal(after.voting.result, "Yes");
+  assert.deepEqual(Object.values(after.voting.votes), ["yes", "yes"]);
+  assert.deepEqual(after.roundHistory, ["Green"]);
+});
+
+test("a Company player's sabotage still fails the mission", async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const setup = await setupRoom(srv, 5);
+  await startGame(srv, setup);
+  const roles = srv.rooms[setup.roomCode].players;
+  const eic = setup.players.find((p) => roles.find((r) => r.id === p.id).character.team !== "Nawabs");
+  await openMissionVote(srv, setup, [eic]);
+
+  const done = next(setup.players[0].socket, "roomUpdated", (r) => r.voting && !r.voting.active);
+  eic.socket.emit("castVote", { roomCode: setup.roomCode, choice: "no" });
+  const after = await done;
+  assert.equal(after.voting.result, "No");
+  assert.deepEqual(after.roundHistory, ["Red"]);
+});
+
+test("Mir Jafor's strike names the winner with the same labels as the rest of the game", async (t) => {
+  for (const hitMirMadan of [true, false]) {
+    const srv = await startServer();
+    const setup = await setupRoom(srv, 5);
+    await startGame(srv, setup);
+    const room = srv.rooms[setup.roomCode];
+    const roleOf = (p) => room.players.find((r) => r.id === p.id).character.id;
+    const mirJafor = setup.players.find((p) => roleOf(p) === 1);
+    const target = setup.players.find((p) => p !== mirJafor && (roleOf(p) === 8) === hitMirMadan);
+    room.gameStatus = "MIR_JAFOR_TURN";
+
+    const over = next(mirJafor.socket, "roomUpdated", (r) => r.gameStatus === "OVER");
+    mirJafor.socket.emit("attemptAssassination", { roomCode: setup.roomCode, targetId: target.id });
+    const { winner } = await over;
+    // "East India Company (Red)" is also what three failed missions produce.
+    assert.equal(winner, hitMirMadan ? "East India Company (Red)" : "Nawabs (Green)");
+    await srv.stop();
+  }
 });

@@ -120,6 +120,10 @@ const EIC_TEAM = "East India Company (EIC)";
 const MIR_JAFOR_ID = 1;
 const MIR_MADAN_ID = 8;
 
+// The two possible winners, exactly as stored on the room and in the game logs.
+const WINNER_NAWABS = "Nawabs (Green)";
+const WINNER_EIC = "East India Company (Red)";
+
 module.exports = {
   CharacterList,
   fakeHistoricalNames,
@@ -129,4 +133,6 @@ module.exports = {
   EIC_TEAM,
   MIR_JAFOR_ID,
   MIR_MADAN_ID,
+  WINNER_NAWABS,
+  WINNER_EIC,
 };

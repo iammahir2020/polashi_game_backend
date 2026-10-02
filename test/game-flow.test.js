@@ -5,8 +5,9 @@ const { MISSION_CONFIGS } = require("../game/constants");
 
 // Plays one round the way the UI does: host appoints a General, the General
 // proposes a team and calls the council vote, everyone votes, the host calls the
-// secret vote, the team votes.
-async function playRound(setup, { council = "yes", mission = "yes" } = {}) {
+// secret vote, the team votes. `teamOrder` (player ids) decides who is picked
+// first; by default the battalion in seating order.
+async function playRound(setup, { council = "yes", mission = "yes", teamOrder } = {}) {
   const { roomCode, players, host } = setup;
   let update = next(host.socket, "roomUpdated", (r) => r.players.some((p) => p.isGeneral));
   host.socket.emit("assignGeneral", { roomCode, requesterId: host.id });
@@ -14,7 +15,7 @@ async function playRound(setup, { council = "yes", mission = "yes" } = {}) {
   const generalId = room.players.find((p) => p.isGeneral).id;
   const general = players.find((p) => p.id === generalId);
   const size = MISSION_CONFIGS[room.activePlayerIds.length][room.currentRound - 1].players;
-  const team = room.activePlayerIds.slice(0, size);
+  const team = (teamOrder || room.activePlayerIds).slice(0, size);
 
   for (let i = 1; i <= team.length; i++) {
     update = next(host.socket, "roomUpdated", (r) => r.proposedTeam.length === i);
@@ -77,9 +78,13 @@ test("three failed missions end the game for the Company", async (t) => {
   t.after(() => srv.stop());
   const setup = await setupRoom(srv, 5);
   let room = await startGame(srv, setup);
-  for (let i = 0; i < 3; i++) ({ room } = await playRound(setup, { mission: "no" }));
+  // Only the Company can sabotage (a Nawab's "no" counts as a success), so
+  // put the Company's players on every team first.
+  const isEic = (id) => srv.rooms[setup.roomCode].players.find((p) => p.id === id).character.team !== "Nawabs";
+  const teamOrder = [...room.activePlayerIds].sort((a, b) => isEic(b) - isEic(a));
+  for (let i = 0; i < 3; i++) ({ room } = await playRound(setup, { mission: "no", teamOrder }));
   assert.equal(room.gameStatus, "OVER");
-  assert.equal(room.winner, "EIC (Red)");
+  assert.equal(room.winner, "East India Company (Red)");
   assert.deepEqual(room.roundHistory, ["Red", "Red", "Red"]);
 });
 
