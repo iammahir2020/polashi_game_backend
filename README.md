@@ -40,7 +40,7 @@ Game state is held in memory on a single instance. Finished games are logged to 
 ```sh
 npm ci
 npm start   # node server.js
-npm test    # 41 tests: full games, security checks, validation; no external services needed
+npm test    # 44 tests: full games, security checks, validation; no external services needed
 ```
 
 ## Security model
