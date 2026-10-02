@@ -249,13 +249,13 @@ test("malformed events never crash the server", async (t) => {
 test("names are cleaned, clipped and kept unique within a room", async (t) => {
   const srv = await startServer();
   t.after(() => srv.stop());
-  const setup = await setupRoom(srv, 3, ["Siraj", "S​ir‮aj", "  " + "x".repeat(80)]);
+  const setup = await setupRoom(srv, 3, ["Siraj", "S\u200Bir\u202Eaj", "  " + "x".repeat(80)]);
   const names = srv.rooms[setup.roomCode].players.map((p) => p.name);
   assert.deepEqual(names, ["Siraj", "Siraj 2", "x".repeat(24)]);
 
   const s = await srv.client();
   const err = next(s, "errorMessage");
-  s.emit("joinRoom", { roomCode: setup.roomCode, name: " ​​ " });
+  s.emit("joinRoom", { roomCode: setup.roomCode, name: " \u200B\u200B " });
   assert.equal(await err, "Please enter a name.");
 });
 

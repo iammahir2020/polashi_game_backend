@@ -8,14 +8,14 @@ const char = (id) => CharacterList.find((c) => c.id === id);
 
 test("normalizeName strips invisible and direction characters and clips", () => {
   assert.equal(normalizeName("  Siraj  "), "Siraj");
-  assert.equal(normalizeName("Si​raj"), "Siraj");
-  assert.equal(normalizeName("‮jaris"), "jaris");
+  assert.equal(normalizeName("Si\u200Braj"), "Siraj");
+  assert.equal(normalizeName("\u202Ejaris"), "jaris");
   assert.equal(normalizeName("a\n\tb"), "ab");
   assert.equal(normalizeName("a    b"), "a b");
   assert.equal(normalizeName("ｗｉｄｅ"), "wide");
   assert.equal(normalizeName("পলাশী"), "পলাশী");
   assert.equal(normalizeName("x".repeat(100)), "x".repeat(24));
-  assert.equal(normalizeName("​ ‍"), "");
+  assert.equal(normalizeName("\u200B \u200D"), "");
   assert.equal(normalizeName(42), "");
   assert.equal(normalizeName({}), "");
 });
