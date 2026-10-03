@@ -4,21 +4,19 @@ Real-time server for [The Battle of Polashi](https://the-great-polashi-game.verc
 online adaptation of Playground Inc.'s Polashi board game. Node 20, Express 5, Socket.IO 4. The
 frontend lives in [polashi_game_frontend](https://github.com/iammahir2020/polashi_game_frontend).
 
-Game state is held in memory on a single instance. Finished games are logged to Firestore
-(`GameLogger.js`). The public statistics endpoints are switched off (commented out in
-`routes/analytics.js`); the admin-only player list still queries MongoDB (`models/GameLog.js`).
+Game state is held in memory on a single instance. Games are logged to Firestore
+(`GameLogger.js`, `game_logs` collection).
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `server.js` | Entry point: environment, MongoDB, Firestore logger, analytics routes, `listen` |
+| `server.js` | Entry point: environment, Firestore logger, `listen` |
 | `game/createGameServer.js` | Express + Socket.IO server and every socket event handler |
 | `game/room.js` | Per-player room view (what each client may see), secret intel, codes and tokens |
 | `game/validation.js` | Payload schemas (zod) and player-name rules |
 | `game/limits.js` | Client address, token buckets and the HTTP rate limiter |
 | `game/constants.js` | Characters, decoy names, mission sizes, team distribution |
-| `routes/analytics.js` | `/api/analytics/*` |
 | `test/` | `npm test` (Node's built-in test runner) |
 
 ## Environment
@@ -27,9 +25,7 @@ Game state is held in memory on a single instance. Finished games are logged to 
 |---|---|---|
 | `PORT` | no | Listen port (default 3000; Render sets it) |
 | `CLIENT_URL` | recommended | Allowed browser origins, comma-separated. Defaults to the production site and local dev servers |
-| `MONGODB_URI` | for analytics | MongoDB connection string |
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | yes | Service account for game logs |
-| `ADMIN_TOKEN` | no | At least 16 characters. Enables `GET /api/analytics/all-players` with `Authorization: Bearer <token>` |
 | `MAX_ROOMS` | no | Live rooms allowed on this instance (default 1000, sized for 512 MB of RAM; see below) |
 | `MAX_CONNECTIONS` | no | Open connections allowed on this instance (default 5000; `0` turns the cap off) |
 | `MAX_SOCKETS_PER_IP` | no | Open connections from one address (default 40, enough for a full party on one Wi-Fi; `0` = off) |
@@ -40,7 +36,7 @@ Game state is held in memory on a single instance. Finished games are logged to 
 ```sh
 npm ci
 npm start   # node server.js
-npm test    # 44 tests: full games, security checks, validation; no external services needed
+npm test    # 43 tests: full games, security checks, validation; no external services needed
 ```
 
 ## Security model
@@ -73,8 +69,8 @@ refreshes mid-game is asked to join again instead of being put back in their sea
 
 ## Capacity
 
-Measured locally with bots playing complete 7-player games over real sockets (Firestore and
-MongoDB stubbed out):
+Measured locally with bots playing complete 7-player games over real sockets (Firestore
+stubbed out):
 
 | Concurrent games | Connected players | Server memory (RSS) |
 |---|---|---|

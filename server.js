@@ -1,8 +1,6 @@
 require("dotenv").config();
-const mongoose = require("mongoose");
 const { GameLogger } = require("./GameLogger");
 const { createGameServer, DEFAULT_ORIGINS } = require("./game/createGameServer");
-const { registerAnalyticsRoutes } = require("./routes/analytics");
 
 // Browser origins allowed to connect: CLIENT_URL as a comma-separated list, or
 // the production site plus local dev servers when it isn't set. "*" is still
@@ -25,14 +23,6 @@ const capFromEnv = (name, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
-if (process.env.MONGODB_URI) {
-  mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log("✅ Successfully connected to MongoDB Atlas"))
-    .catch(err => console.error("❌ MongoDB connection error:", err && err.message));
-} else {
-  console.warn("MONGODB_URI not set: analytics endpoints will fail.");
-}
-
 const { httpServer } = createGameServer({
   logger: GameLogger,
   allowedOrigins: readAllowedOrigins(),
@@ -40,7 +30,6 @@ const { httpServer } = createGameServer({
   maxConnections: capFromEnv("MAX_CONNECTIONS", 5000),
   maxSocketsPerIp: capFromEnv("MAX_SOCKETS_PER_IP", 40),
   maxRoomsPerIp: capFromEnv("MAX_ROOMS_PER_IP", 10),
-  configureApp: registerAnalyticsRoutes,
 });
 
 // Last-resort logging. Handlers are already wrapped; anything reaching here is a bug.
