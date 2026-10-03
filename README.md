@@ -69,16 +69,40 @@ refreshes mid-game is asked to join again instead of being put back in their sea
 
 ## Capacity
 
-Measured locally with bots playing complete 7-player games over real sockets (Firestore
-stubbed out):
+Measured on 2026-10-03 against the deployed server (`polashi-game-backend.onrender.com`), with bots
+playing complete games over real sockets from one machine. One address may hold 40 connections and
+10 rooms (`MAX_SOCKETS_PER_IP`, `MAX_ROOMS_PER_IP`), so the runs stay at that ceiling: they show how
+the live server behaves with several busy parties, not where the instance runs out.
 
-| Concurrent games | Connected players | Server memory (RSS) |
-|---|---|---|
-| 200 | 1,400 | ~150 MB idle, ~320 MB peak |
-| 1,000 | 7,000 | ~300 MB idle, ~480-500 MB peak |
+| Run (5 minutes each) | Open sockets | Games completed | Events/s | Action latency p50 / p95 / p99 | Steps that stalled |
+|---|---|---|---|---|---|
+| 4 games x 7 players | 34 | 131 | 23 | 256 / 709 / 1,460 ms | 0 |
+| 7 games x 5 players | 39 | 101 | 15 | 311 / 2,294 / 4,780 ms | 11 |
+| 5 games x 7 players | 35 | 58 | 10 | 269 / 1,595 / 4,263 ms | 31 |
 
-A whole game costs about 20-35 ms of server CPU, so CPU isn't the limit; memory is (about 30 KB per
-connected player on top of a ~90 MB baseline). On a 512 MB instance plan for roughly 500-700
-simultaneous games and treat ~1,000 as the ceiling, which is why `MAX_ROOMS` defaults to 1000. Rooms
-live in one process's memory, so the server can't be scaled across instances as it stands, and a
-restart or deploy ends every game in progress.
+Latency is the time from a bot's action to the host receiving the resulting room update, and it
+includes the network: an idle round trip from the test machine took 250-300 ms, so the medians are
+almost entirely network time.
+
+- The server kept up in every run. No action was rate limited, the health check answered in about
+  300 ms throughout, and the instance didn't restart.
+- The per-address cap works in production: the 40th connection from the test machine was refused
+  (HTTP 400).
+- Connections fail at Render's Cloudflare edge whether or not there is load. Opening 30 websockets
+  one at a time with nothing else running, 6 were refused with HTTP 520. In the last run 7
+  connections also dropped mid-game (`ping timeout`). The bots don't reconnect, so their games
+  stalled, which is why the later runs completed fewer games. The frontend retries (from 1 s up to
+  30 s apart) and rejoins with its reconnect token, so a player sees a delay instead of losing
+  their seat.
+- The tests sent about 180 MB of outbound traffic (Render's Metrics tab), roughly 0.6 MB per
+  completed game. That is an upper bound, since it also covers the stalled games and the
+  connection tests.
+- Memory and CPU weren't measured. The instance is on Render's free plan, whose Metrics tab shows
+  only outbound bandwidth; memory and CPU need a paid plan. Finding the instance's real limit also
+  needs more addresses than one machine has, or the per-address caps raised for the duration of a
+  test.
+
+`MAX_ROOMS` defaults to 1000 because earlier local measurements (about 30 KB per connected player on
+a ~90 MB baseline) put that near the ceiling of a 512 MB instance. Rooms live in one process's
+memory, so the server can't be scaled across instances as it stands, and a restart or deploy ends
+every game in progress.
