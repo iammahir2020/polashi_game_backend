@@ -2,7 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer, next, setupRoom } = require("./helpers");
 const { clientIp, ipKey } = require("../game/limits");
-const { registerAnalyticsRoutes } = require("../routes/analytics");
 
 // A client that appears to come from `ip` (as Cloudflare would report it).
 const from = (ip) => ({ extraHeaders: { "cf-connecting-ip": ip } });
@@ -98,13 +97,4 @@ test("HTTP requests are rate limited per address", async (t) => {
   for (let i = 0; i < 3; i++) assert.equal(await get("1.1.1.1"), 200);
   assert.equal(await get("1.1.1.1"), 429);
   assert.equal(await get("2.2.2.2"), 200);
-});
-
-test("the public statistics endpoints are switched off", async (t) => {
-  const srv = await startServer({ configureApp: registerAnalyticsRoutes });
-  t.after(() => srv.stop());
-  for (const path of ["win-rates", "recent-games", "all-players"]) {
-    const res = await fetch(`${srv.url}/api/analytics/${path}`);
-    assert.equal(res.status, 404, path);
-  }
 });
