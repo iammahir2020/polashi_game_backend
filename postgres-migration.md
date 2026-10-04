@@ -309,20 +309,35 @@ games still in progress are closed by the next instance's start-up step.
 
 ## 6. Importing the Firestore games
 
-A script (`scripts/import-firestore.js`) reads a Firestore export taken at switch-over (so no games
-are lost between now and then) and writes it into the new tables.
+Two scripts, run from a machine with the `FIREBASE_*` and `postgres` credentials in `.env`:
+
+1. `node scripts/export-firestore.js` reads the whole `game_logs` collection (read-only) into
+   `exports/game_logs-<date>.json`. The folder is gitignored, since the file holds player names.
+2. `node scripts/import-firestore.js <file>` checks every document and prints the counts (a dry
+   run); with `--write` it imports, one transaction per game.
+
+How the old documents map:
 
 - Skips the 334 load-test games (players named `LoadBot ...`).
 - Bangla role names become character ids; both winner spellings become `NAWABS` / `EIC`.
+- `COMPLETED` games get their end reason from the rounds: three fails is `three_fails`, three
+  successes is `assassin_hit` (Company won) or `assassin_missed` (Nawabs won).
 - `IN_PROGRESS` games become `abandoned` / `legacy_unknown`.
 - Each logged round becomes an approved proposal with its sabotage count, and its per-player
-  votes (the Firestore field `votes`, which holds the mission votes) become `mission_votes`.
+  votes (the Firestore field `votes`, which holds the mission votes) become `mission_votes`, as
+  the server counted them then. Before 2026-10-03 a Nawab's "no" counted as a sabotage; the data
+  has none.
 - Names map to player ids through the game's `identities` (names are unique inside a room).
 - `legacy_id` holds the Firestore document id, so running the import twice adds nothing.
+- Anything the script can't map (an unknown role, winner or name) stops it, rather than being
+  stored wrong.
 
-Can't be recovered for old games: approval votes, rejected teams and `player_key`.
+Can't be recovered for old games: approval votes, rejected teams, seats (the imported seat order
+is arbitrary), settings, assassination targets and `player_key`.
 
-**Check after importing:** 113 games, 68 completed, 29 won by the Nawabs and 39 by the Company.
+**Done on 2026-10-04:** exported 447 documents and imported 113 games: 68 completed (29 won by the
+Nawabs, 39 by the Company) and 45 abandoned, with 812 players, 304 proposals and 1,013 mission
+votes, from 2026-02-08 to 2026-10-02. These match the counts taken before the move.
 
 ## 7. Keeping the project awake, and backups
 

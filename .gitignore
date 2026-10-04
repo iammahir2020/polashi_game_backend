@@ -5,3 +5,6 @@ node_modules
 # Agent skills installed locally
 .agents/
 skills-lock.json
+
+# Firestore exports (player names)
+exports/
