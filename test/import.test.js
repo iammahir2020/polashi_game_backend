@@ -65,6 +65,9 @@ test("anything it can't map stops the import instead of being stored wrong", () 
   const badName = doc();
   badName.rounds.round_1.team = ["Nobody"];
   assert.throws(() => transform(badName), /unknown player name/);
+  const badVote = doc();
+  badVote.rounds.round_2.votes[B] = "maybe";
+  assert.throws(() => transform(badVote), /odd vote "maybe"/);
 });
 
 test("load-test games are recognised by their bot names", () => {

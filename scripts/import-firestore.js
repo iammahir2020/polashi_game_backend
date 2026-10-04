@@ -44,7 +44,10 @@ function transform(doc) {
       if (r.result !== "Success" && r.result !== "Fail") fail(`odd result in ${key}`);
       const teamIds = (r.team || []).map(idOf);
       const votes = Object.entries(r.votes || {});
-      for (const [id] of votes) if (!teamOf.has(id)) fail(`vote from an unknown player in ${key}`);
+      for (const [id, vote] of votes) {
+        if (!teamOf.has(id)) fail(`vote from an unknown player in ${key}`);
+        if (vote !== "yes" && vote !== "no") fail(`odd vote ${JSON.stringify(vote)} in ${key}`);
+      }
       return {
         round,
         generalId: r.general ? idOf(r.general) : null,
