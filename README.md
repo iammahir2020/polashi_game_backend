@@ -4,14 +4,19 @@ Real-time server for [The Battle of Polashi](https://the-great-polashi-game.verc
 online adaptation of Playground Inc.'s Polashi board game. Node 20, Express 5, Socket.IO 4. The
 frontend lives in [polashi_game_frontend](https://github.com/iammahir2020/polashi_game_frontend).
 
-Game state is held in memory on a single instance. Games are logged to Firestore
-(`GameLogger.js`, `game_logs` collection).
+Game state is held in memory on a single instance. Games are logged to Postgres on Supabase
+(`GameLogger.js`, schema `polashi`), each event as it happens: the game and its players, every team
+proposal with its votes, mission results and Guptochor investigations. The data model and its
+reasons are in `postgres-migration.md`.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `server.js` | Entry point: environment, Firestore logger, `listen` |
+| `server.js` | Entry point: environment, game logger, `listen`, shutdown |
+| `GameLogger.js` | Writes game events to Postgres, in order per game; failures never interrupt play |
+| `db/pool.js` | Postgres pool (5 connections, TLS verified with `db/prod-ca-2021.crt`) |
+| `db/migrate.js`, `db/migrations/` | `npm run migrate`: applies numbered SQL files once each |
 | `game/createGameServer.js` | Express + Socket.IO server and every socket event handler |
 | `game/room.js` | Per-player room view (what each client may see), secret intel, codes and tokens |
 | `game/validation.js` | Payload schemas (zod) and player-name rules |
@@ -25,7 +30,7 @@ Game state is held in memory on a single instance. Games are logged to Firestore
 |---|---|---|
 | `PORT` | no | Listen port (default 3000; Render sets it) |
 | `CLIENT_URL` | recommended | Allowed browser origins, comma-separated. Defaults to the production site and local dev servers |
-| `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | yes | Service account for game logs |
+| `DATABASE_URL` | yes, in production | Supabase session pooler string for the `polashi_app` role. Without it the game runs and nothing is logged |
 | `MAX_ROOMS` | no | Live rooms allowed on this instance (default 1000, sized for 512 MB of RAM; see below) |
 | `MAX_CONNECTIONS` | no | Open connections allowed on this instance (default 5000; `0` turns the cap off) |
 | `MAX_SOCKETS_PER_IP` | no | Open connections from one address (default 40, enough for a full party on one Wi-Fi; `0` = off) |
@@ -35,9 +40,22 @@ Game state is held in memory on a single instance. Games are logged to Firestore
 
 ```sh
 npm ci
-npm start   # node server.js
-npm test    # 43 tests: full games, security checks, validation; no external services needed
+npm start         # node server.js
+npm test          # full games, security checks, validation, game log events; no external services needed
+npm run migrate   # apply new files in db/migrations; DATABASE_URL must be the postgres role's string
 ```
+
+The database tests run only when `TEST_DATABASE_URL` points at a local Postgres they may wipe:
+
+```sh
+docker run -d --name polashi-test-pg -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine
+TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres npm test
+```
+
+`.github/workflows/db-keepalive.yml` queries the database every 3 days, so the free Supabase
+project never pauses, and takes an encrypted backup every Sunday (secrets `BACKUP_DATABASE_URL`, for
+the read-only `polashi_readonly` role, and `BACKUP_PASSPHRASE`). To restore one, download the
+artifact and run `gpg -d polashi-<date>.dump.gpg > polashi.dump`, then `pg_restore`.
 
 ## Security model
 
@@ -47,7 +65,8 @@ npm test    # 43 tests: full games, security checks, validation; no external ser
   (`reconnectPlayer`) requires it.
 - Every room sent to a client goes through `roomViewer` in `game/room.js`: other players' characters
   are hidden until the game ends (observers see all, by design), open votes show only who has voted,
-  closed mission votes are anonymous, and socket ids, tokens and log ids are never sent.
+  closed mission votes are anonymous, and socket ids, tokens, device keys and log state are never
+  sent. The game logs record who sabotaged each mission; nothing a player can reach reads them.
 - Every event payload is validated; handlers can't crash the process. Each socket is rate limited,
   messages are capped at 16 KB, rooms are capped and swept when abandoned (nobody online for 30
   minutes, or no activity for 12 hours).

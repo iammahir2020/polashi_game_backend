@@ -68,14 +68,14 @@ test("secret intel follows the original rules", () => {
 test("personalizeRoom shows only what the viewer may see", () => {
   const room = gameRoom([["A", 1], ["B", 5], ["C", 8], ["D", 2], ["E", 6]]);
   room.players[0].reconnectToken = "secret";
-  room.currentLogId = "log";
+  room.gameLog = { id: "1" };
   room.generalHistory = ["A"];
   room.players.push({ id: "Obs", name: "Obs", character: null, isObserver: true, online: true });
   const viewA = personalizeRoom(room, room.players[0]);
   assert.equal(viewA.players[0].character.id, 1);
   assert.ok(viewA.players.slice(1).every((p) => p.character === null));
   assert.ok(viewA.players.every((p) => p.socketId === undefined && p.reconnectToken === undefined));
-  assert.equal(viewA.currentLogId, undefined);
+  assert.equal(viewA.gameLog, undefined);
   assert.equal(viewA.generalHistory, undefined);
   assert.ok(Array.isArray(viewA.secretIntel));
 

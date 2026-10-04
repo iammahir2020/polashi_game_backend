@@ -43,14 +43,17 @@ const roomCode = z
   .regex(/^[A-Z0-9]{4,12}$/);
 const id = z.string().min(1).max(64);
 const shortText = z.string().max(200);
+// The device id the frontend keeps for the game logs. Optional, and dropped
+// rather than refused when malformed: it must never stop anyone from playing.
+const playerKey = z.uuid().optional().catch(undefined);
 
 // Payload schemas, one per event. Unknown keys are dropped. Fields such as
 // requesterId/playerId are still accepted (the client sends them) but no
 // longer trusted: the acting player always comes from the socket's session.
 const schemas = {
-  createRoom: z.object({ name: shortText }),
+  createRoom: z.object({ name: shortText, playerKey }),
   // Loose on purpose: a mistyped code should get "Room not found", not silence.
-  joinRoom: z.object({ roomCode: z.string().max(64), name: shortText }),
+  joinRoom: z.object({ roomCode: z.string().max(64), name: shortText, playerKey }),
   reconnectPlayer: z.object({ roomCode, playerId: id, reconnectToken: z.string().max(128).optional() }),
   leaveRoom: z.object({ roomCode, playerId: id.optional() }),
   closeRoom: z.object({ roomCode }),

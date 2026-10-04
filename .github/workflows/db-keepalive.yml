@@ -1,0 +1,87 @@
+# Keeps the Supabase free project from pausing (it pauses after 7 idle days)
+# and takes a weekly encrypted backup. See postgres-migration.md, section 7.
+#
+# Secrets:
+#   BACKUP_DATABASE_URL  session pooler string for the polashi_readonly role
+#   BACKUP_PASSPHRASE    encrypts the dump; the repository is public, and so
+#                        are its workflow artifacts
+name: Database keep-alive and backup
+
+on:
+  schedule:
+    - cron: "17 6 */3 * *"   # every 3 days: keep-alive
+    - cron: "41 6 * * 0"     # Sundays: keep-alive and backup
+  workflow_dispatch:
+    inputs:
+      backup:
+        description: Also take a backup
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-keepalive
+  cancel-in-progress: false
+
+env:
+  PG_IMAGE: postgres:17-alpine
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: db/prod-ca-2021.crt
+          sparse-checkout-cone-mode: false
+
+      - name: Query the database
+        env:
+          DB_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          docker run --rm -e DB_URL -e PGSSLMODE=verify-full -e PGSSLROOTCERT=/ca.crt \
+            -v "$PWD/db/prod-ca-2021.crt:/ca.crt:ro" "$PG_IMAGE" \
+            sh -c 'psql "$DB_URL" -v ON_ERROR_STOP=1 -tAc "select count(*) from polashi.games"'
+
+  backup:
+    needs: keepalive
+    if: github.event.schedule == '41 6 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.backup)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: db/prod-ca-2021.crt
+          sparse-checkout-cone-mode: false
+
+      - name: Dump the polashi schema
+        env:
+          DB_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          mkdir -p out
+          docker run --rm -e DB_URL -e PGSSLMODE=verify-full -e PGSSLROOTCERT=/ca.crt \
+            -v "$PWD/db/prod-ca-2021.crt:/ca.crt:ro" -v "$PWD/out:/out" "$PG_IMAGE" \
+            sh -c 'pg_dump "$DB_URL" --schema=polashi --enable-row-security --no-owner --no-privileges \
+                     --format=custom --file=/out/polashi.dump'
+          test -s out/polashi.dump
+
+      - name: Encrypt
+        env:
+          PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          test -n "$PASSPHRASE"
+          name="polashi-$(date -u +%Y-%m-%d).dump.gpg"
+          printf '%s' "$PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 --output "out/$name" out/polashi.dump
+          rm out/polashi.dump
+          echo "BACKUP_NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_NAME }}
+          path: out/${{ env.BACKUP_NAME }}
+          retention-days: 90
+          if-no-files-found: error
