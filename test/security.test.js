@@ -8,8 +8,10 @@ function assertNoSecrets(room) {
   for (const p of room.players) {
     for (const f of SECRET_FIELDS) assert.equal(p[f], undefined, `player.${f} leaked`);
   }
-  assert.equal(room.currentLogId, undefined);
-  assert.equal(room.generalHistory, undefined);
+  for (const key of ["gameLog", "playerStats", "seriesId", "gamesStarted", "proposalAttempt", "generalHistory"]) {
+    assert.equal(room[key], undefined, `room.${key} leaked`);
+  }
+  for (const p of room.players) assert.equal(p.playerKey, undefined, "player.playerKey leaked");
 }
 
 test("room updates hide socket ids, reconnect secrets and other players' roles", async (t) => {

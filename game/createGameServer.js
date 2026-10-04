@@ -34,17 +34,14 @@ const DEFAULT_ORIGINS = [
   "http://localhost:4317",
 ];
 
-const noopLogger = {
-  logGameStart() {},
-  logRoundResult() {},
-  logGameOver() {},
-};
+const noopLogger = {};
 
 /**
  * Builds the HTTP + Socket.IO game server without starting it.
  *
  * options:
- *   logger        game log sink ({ logGameStart, logRoundResult, logGameOver })
+ *   logger        game log sink (see GameLogger.js): gameStarted, proposalResolved,
+ *                 missionResolved, investigation, gameEnded; missing methods are skipped
  *   allowedOrigins  browser origins allowed to connect ("*" allows all)
  *   maxPlayers    players per room (default 20)
  *   maxRooms      live rooms on this instance (default 1000)
@@ -221,12 +218,36 @@ function createGameServer(options = {}) {
     });
   }
 
-  function safeLog(fn, ...args) {
+  // Hands one game event to the logger. Logging never interrupts play.
+  function logEvent(event, ...args) {
+    const fn = logger[event];
+    if (typeof fn !== "function") return;
     try {
       Promise.resolve(fn.apply(logger, args)).catch((e) => log.error("Game log failed:", e && e.message));
     } catch (e) {
       log.error("Game log failed:", e && e.message);
     }
+  }
+
+  // Per-player counters for the game in progress, written when it ends.
+  function statsOf(room, playerId) {
+    return room.gameLog && room.playerStats ? room.playerStats.get(playerId) : undefined;
+  }
+
+  // Closes the log of the room's game in progress, if any. Called once per
+  // game: completed, reset by the host, or abandoned with the room.
+  function endGameLog(room, status, reason, extra = {}) {
+    const gameLog = room.gameLog;
+    if (!gameLog) return;
+    room.gameLog = null;
+    logEvent("gameEnded", gameLog, {
+      status,
+      reason,
+      winner: status === "completed" ? room.winner : null,
+      missionResults: (room.roundHistory || []).map((r) => (r === "Green" ? "S" : "F")).join(""),
+      players: [...(room.playerStats || new Map())].map(([id, stats]) => ({ id, ...stats })),
+      ...extra,
+    });
   }
 
   function isHost(player) {
@@ -243,6 +264,7 @@ function createGameServer(options = {}) {
       const lone = !room.gameStarted && room.players.length <= 1;
       const idleLimit = lone ? Math.min(LONE_ROOM_IDLE_MS, ROOM_IDLE_MS) : ROOM_IDLE_MS;
       if (idleFor > ROOM_MAX_IDLE_MS || (!anyoneOnline && idleFor > idleLimit)) {
+        endGameLog(room, "abandoned", "swept_idle");
         for (const p of room.players) if (p.socketId) unbindPlayer(p.socketId, code, p.id);
         delete rooms[code];
       }
@@ -299,7 +321,7 @@ function createGameServer(options = {}) {
       socket.emit("characterListUpdate", CharacterList);
     });
 
-    on("createRoom", schemas.createRoom, ({ name }) => {
+    on("createRoom", schemas.createRoom, ({ name, playerKey }) => {
       const cleanName = normalizeName(name);
       if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
       const liveRooms = Object.values(rooms);
@@ -318,6 +340,7 @@ function createGameServer(options = {}) {
         players: [{
           id,
           name: cleanName,
+          playerKey, // server-only: the device id, for the game logs
           socketId: socket.id,
           isGameMaster: true,
           online: true,
@@ -333,6 +356,8 @@ function createGameServer(options = {}) {
         disableSecretIntelligence: false,
         lastActivity: Date.now(),
         creatorIp: ip, // server-only, for the per-address room cap
+        seriesId: crypto.randomUUID(), // server-only: links the games played in this room
+        gamesStarted: 0,
       };
 
       socket.join(roomCode);
@@ -340,7 +365,7 @@ function createGameServer(options = {}) {
       sendJoined(socket, roomCode, rooms[roomCode].players[0]);
     });
 
-    on("joinRoom", schemas.joinRoom, ({ roomCode: rawCode, name }) => {
+    on("joinRoom", schemas.joinRoom, ({ roomCode: rawCode, name, playerKey }) => {
       const roomCode = rawCode.trim().toUpperCase();
       const room = rooms[roomCode];
       if (!room) return socket.emit("errorMessage", "Room not found");
@@ -354,6 +379,7 @@ function createGameServer(options = {}) {
       const player = {
         id,
         name: uniqueName(cleanName, room.players.map((p) => p.name)),
+        playerKey,
         socketId: socket.id,
         isGameMaster: false,
         online: true,
@@ -376,6 +402,7 @@ function createGameServer(options = {}) {
         return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
       }
       const room = actor.room;
+      endGameLog(room, "abandoned", "room_closed");
 
       // 1. Broadcast to everyone in the room FIRST
       io.to(roomCode).emit("roomDissolved");
@@ -409,6 +436,14 @@ function createGameServer(options = {}) {
       room.guptochorUsed = true;
       room.nextGuptochorId = targetPlayerId;
       touch(room);
+      if (room.gameLog) {
+        logEvent("investigation", room.gameLog, {
+          round: room.currentRound,
+          investigatorId: requester.id,
+          targetId: targetPlayerId,
+          shownTeam: target.character.team,
+        });
+      }
 
       socket.emit("guptochorResult", {
         targetName: target.name,
@@ -444,6 +479,8 @@ function createGameServer(options = {}) {
       }
       player.socketId = socket.id;
       player.online = true;
+      const stats = statsOf(room, player.id);
+      if (stats) stats.reconnects++;
       touch(room);
 
       socket.join(roomCode);
@@ -490,7 +527,7 @@ function createGameServer(options = {}) {
       if (!isHost(player) && !player.isGeneral) return;
       if (!room.gameStarted || room.gameStatus !== "ACTIVE") return;
 
-      room.voting = { active: true, votes: {}, result: null, type: "teamApproval" };
+      room.voting = { active: true, votes: {}, result: null, type: "teamApproval", startedAt: new Date() };
       touch(room);
       broadcastRoomUpdate(roomCode);
     });
@@ -541,6 +578,18 @@ function createGameServer(options = {}) {
 
         if (room.voting.type === "teamApproval") {
           room.voting.result = (noVotes >= room.activePlayerIds.length / 2) ? "No" : "Yes";
+          room.proposalAttempt = (room.proposalAttempt || 0) + 1;
+          if (room.gameLog) {
+            logEvent("proposalResolved", room.gameLog, {
+              round: room.currentRound,
+              attempt: room.proposalAttempt,
+              generalId: room.players.find((p) => p.isGeneral)?.id ?? null,
+              teamIds: [...(room.proposedTeam || [])],
+              approved: room.voting.result === "Yes",
+              votes: { ...room.voting.votes },
+              proposedAt: room.voting.startedAt,
+            });
+          }
         } else {
           // Lookup requirement from the MISSION_CONFIGS table
           const config = MISSION_CONFIGS[room.activePlayerIds.length][room.currentRound - 1];
@@ -557,13 +606,13 @@ function createGameServer(options = {}) {
             room.roundHistory.push("Green");
           }
 
-          safeLog(logger.logRoundResult, room.currentLogId, room.currentRound, {
-            generalName: room.players.find(p => p.isGeneral)?.name,
-            proposedTeamNames: room.players.filter(p => room.proposedTeam.includes(p.id)).map(p => p.name),
-            councilVotes: room.voting.votes,
-            sabotageCount: noVotes,
-            result: roundResultText,
-          });
+          if (room.gameLog) {
+            logEvent("missionResolved", room.gameLog, {
+              votes: { ...room.voting.votes },
+              sabotages: noVotes,
+              result: roundResultText === "Success" ? "S" : "F",
+            });
+          }
 
           if (room.scoreGreen === 3) {
             room.gameStatus = "MIR_JAFOR_TURN";
@@ -575,7 +624,7 @@ function createGameServer(options = {}) {
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
             room.winner = WINNER_EIC;
-            safeLog(logger.logGameOver, room.currentLogId, room.winner);
+            endGameLog(room, "completed", "three_fails");
           } else {
             if (room.currentRound === 2) {
               const r2General = room.players.find(p => p.isGeneral);
@@ -586,6 +635,7 @@ function createGameServer(options = {}) {
             room.guptochorUsed = false;
             room.nextGuptochorId = null;
             room.currentRound++;
+            room.proposalAttempt = 0;
           }
         }
         room.voting.active = false;
@@ -665,9 +715,31 @@ function createGameServer(options = {}) {
       room.guptochorUsed = false;
       room.gameStarted = true;
       room.locked = true;
+      room.proposalAttempt = 0;
+      room.gamesStarted = (room.gamesStarted || 0) + 1;
+      room.playerStats = new Map(room.players.map((p) => [p.id, { disconnects: 0, reconnects: 0, leftEarly: false, kicked: false }]));
+      room.gameLog = {};
       touch(room);
 
-      safeLog(logger.logGameStart, roomCode, room);
+      logEvent("gameStarted", room.gameLog, {
+        roomCode,
+        seriesId: room.seriesId,
+        gameNumber: room.gamesStarted,
+        settings: {
+          selectedCharIds: selectedCharacters.map((c) => c.id),
+          disableSecretIntelligence: room.disableSecretIntelligence,
+        },
+        players: room.players.map((p, seat) => ({
+          id: p.id,
+          playerKey: p.playerKey ?? null,
+          name: p.name,
+          seat,
+          characterId: p.character?.id ?? null,
+          team: p.character?.team ?? null,
+          isHost: !!p.isGameMaster,
+          isObserver: !!p.isObserver,
+        })),
+      });
 
       broadcastRoomUpdate(roomCode);
     });
@@ -677,6 +749,7 @@ function createGameServer(options = {}) {
       if (!actor) return;
       const { room, player: gm } = actor;
       if (!isHost(gm)) return socket.emit("errorMessage", "Only the GM can reset the game.");
+      endGameLog(room, "reset", "reset_by_host");
       room.gameStarted = false;
       room.locked = false;
       room.voting = null;
@@ -743,11 +816,14 @@ function createGameServer(options = {}) {
       const index = room.players.findIndex(p => p.id === player.id);
       if (index === -1) return;
       const wasGM = room.players[index].isGameMaster;
+      const stats = statsOf(room, player.id);
+      if (stats) stats.leftEarly = true;
       room.players.splice(index, 1);
       unbindPlayer(socket.id, roomCode, player.id);
       socket.leave(roomCode);
 
       if (room.players.length === 0) {
+        endGameLog(room, "abandoned", "room_emptied");
         delete rooms[roomCode];
         return;
       }
@@ -769,6 +845,8 @@ function createGameServer(options = {}) {
       if (targetIndex === -1) return;
 
       const target = room.players[targetIndex];
+      const stats = statsOf(room, target.id);
+      if (stats) stats.kicked = true;
       if (target.socketId) {
         io.sockets.sockets.get(target.socketId)?.leave(roomCode);
         unbindPlayer(target.socketId, roomCode, target.id);
@@ -790,11 +868,15 @@ function createGameServer(options = {}) {
       const targetPlayer = room.players.find(p => p.id === targetId);
       if (!targetPlayer) return;
 
-      room.winner = targetPlayer.character?.id === MIR_MADAN_ID ? WINNER_EIC : WINNER_NAWABS;
+      const hit = targetPlayer.character?.id === MIR_MADAN_ID;
+      room.winner = hit ? WINNER_EIC : WINNER_NAWABS;
       room.gameStatus = "OVER";
       touch(room);
 
-      safeLog(logger.logGameOver, room.currentLogId, room.winner);
+      endGameLog(room, "completed", hit ? "assassin_hit" : "assassin_missed", {
+        assassinTargetId: targetId,
+        assassinHit: hit,
+      });
 
       broadcastRoomUpdate(roomCode);
     });
@@ -808,6 +890,8 @@ function createGameServer(options = {}) {
         const player = room && room.players.find((p) => p.id === playerId && p.socketId === socket.id);
         if (player) {
           player.online = false;
+          const stats = statsOf(room, player.id);
+          if (stats) stats.disconnects++;
           broadcastRoomUpdate(roomCode);
         }
       }
