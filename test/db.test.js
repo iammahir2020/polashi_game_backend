@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const { createPool } = require("../db/pool");
 const { migrate } = require("../db/migrate");
 const { createGameLogger } = require("../GameLogger");
+const { transform, importGames } = require("../scripts/import-firestore");
 const { startServer, next, setupRoom, startGame, playRound } = require("./helpers");
 
 const URL_ = process.env.TEST_DATABASE_URL;
@@ -138,6 +139,31 @@ test("game logs in Postgres", { skip }, async (t) => {
     assert.equal(errors.length, 2);
     const { rows: [row] } = await ro.query("select status from polashi.games where id = $1", [game.id]);
     assert.equal(row.status, "reset");
+  });
+
+  await t.test("imported Firestore games are written once, however often the import runs", async () => {
+    const A = crypto.randomUUID(), B = crypto.randomUUID();
+    const game = transform({
+      id: "IMPORT-1", roomCode: "IMPORT", startTime: "2026-03-01T10:00:00Z", endTime: "2026-03-01T10:20:00Z",
+      status: "COMPLETED", winner: "EIC (Red)",
+      identities: {
+        [A]: { name: "A", role: "মীর জাফর", team: "East India Company (EIC)", isActive: true },
+        [B]: { name: "B", role: "মীর মদন", team: "Nawabs", isActive: true },
+      },
+      rounds: Object.fromEntries([1, 2, 3].map((n) => [`round_${n}`,
+        { general: "B", team: ["A", "B"], votes: { [A]: "no", [B]: "yes" }, sabotages: 1, result: "Fail", timestamp: `2026-03-01T10:0${n}:00Z` }])),
+    });
+    assert.deepEqual(await importGames(admin, [game]), { added: 1, skipped: 0 });
+    assert.deepEqual(await importGames(admin, [game]), { added: 0, skipped: 1 });
+    const { rows: [row] } = await ro.query(
+      `select g.source, g.status, g.end_reason, g.winner, g.mission_results,
+              (select count(*)::int from polashi.proposals p where p.game_id = g.id) as proposals,
+              (select count(*)::int from polashi.mission_votes m join polashi.proposals p on p.id = m.proposal_id
+                where p.game_id = g.id and m.sabotage) as sabotages,
+              (select array_agg(won order by seat) from polashi.game_players gp where gp.game_id = g.id) as won
+       from polashi.games g where legacy_id = 'IMPORT-1'`);
+    assert.deepEqual(row, { source: "firestore_import", status: "completed", end_reason: "three_fails", winner: "EIC",
+      mission_results: "FFF", proposals: 3, sabotages: 3, won: [true, false] });
   });
 
   await t.test("the app role can't delete, change the schema or read the migration table", async () => {
