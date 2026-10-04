@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: db/prod-ca-2021.crt
           sparse-checkout-cone-mode: false
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: db/prod-ca-2021.crt
           sparse-checkout-cone-mode: false
@@ -79,7 +79,7 @@ jobs:
           rm out/polashi.dump
           echo "BACKUP_NAME=$name" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BACKUP_NAME }}
           path: out/${{ env.BACKUP_NAME }}
