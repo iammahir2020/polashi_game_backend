@@ -132,3 +132,9 @@ almost entirely network time.
 a ~90 MB baseline) put that near the ceiling of a 512 MB instance. Rooms live in one process's
 memory, so the server can't be scaled across instances as it stands, and a restart or deploy ends
 every game in progress. The next start logs those games as `abandoned` / `server_restart`.
+
+## Copyright
+
+Digital version © 2026 Mahir Al Kamal. All rights reserved. This covers the code of this online
+version, not the game: *Polashi*, its rules and its name belong to Playground Inc., and this is an
+unofficial fan project, not affiliated with or endorsed by them. Contact: mahiralkamal.mak@gmail.com.
