@@ -1,5 +1,6 @@
-// Copies the Firestore game logs (from scripts/export-firestore.js) into the
-// Postgres tables. See postgres-migration.md, section 6.
+// Copies the Firestore game logs into the Postgres tables. See
+// postgres-migration.md, section 6. The export it reads came from
+// scripts/export-firestore.js, removed with Firebase (in git history, PR #7).
 //   node scripts/import-firestore.js <export.json>            dry run: checks and counts only
 //   node scripts/import-firestore.js <export.json> --write    writes, using DATABASE_URL
 // Safe to run twice: games already imported (same legacy_id) are skipped.

@@ -309,7 +309,9 @@ games still in progress are closed by the next instance's start-up step.
 
 ## 6. Importing the Firestore games
 
-Two scripts, run from a machine with the `FIREBASE_*` and `postgres` credentials in `.env`:
+Two scripts, run from a machine with the `FIREBASE_*` and `postgres` credentials in `.env`. The
+export script was removed with Firebase in step 3; it is in the git history (PR #7) if it is ever
+needed again.
 
 1. `node scripts/export-firestore.js` reads the whole `game_logs` collection (read-only) into
    `exports/game_logs-<date>.json`. The folder is gitignored, since the file holds player names.
@@ -370,7 +372,7 @@ Each step is its own PR or task, in order.
    set the two role passwords, add `DATABASE_URL` to Render and the GitHub secrets. From this
    deploy on, logs go to Postgres only.
 2. **Import.** Export Firestore, run the import, check the numbers in section 6.
-3. **Remove Firebase.** Delete `firebase-admin.js`, the `firebase-admin` dependency and the
+3. **Remove Firebase.** (Code part done 2026-10-04.) Delete `firebase-admin.js`, the `firebase-admin` dependency and the
    `FIREBASE_*` variables on Render. Leave the Firestore project untouched for a month as a
    backup, then delete it and revoke the service-account key, including the key file in the
    `palassy-game` folder.

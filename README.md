@@ -52,8 +52,8 @@ docker run -d --name polashi-test-pg -e POSTGRES_PASSWORD=test -p 54329:5432 pos
 TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres npm test
 ```
 
-Games logged to Firestore before the move were copied in with `scripts/export-firestore.js` and
-`scripts/import-firestore.js` (`postgres-migration.md`, section 6).
+Games logged to Firestore before the move were copied in with `scripts/import-firestore.js`
+(`postgres-migration.md`, section 6). Firebase has since been removed from the server.
 
 `.github/workflows/db-keepalive.yml` queries the database every 3 days, so the free Supabase
 project never pauses, and takes an encrypted backup every Sunday (secrets `BACKUP_DATABASE_URL`, for
