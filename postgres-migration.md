@@ -1,11 +1,20 @@
 # Moving game logs from Firestore to Postgres (Supabase)
 
-Game logs move from Firestore to a Postgres database on Supabase's free plan, with a new data
-model that records what the old logs missed. The game itself doesn't change: the server keeps game
+Game logs moved from Firestore to a Postgres database on Supabase's free plan, with a new data
+model that records what the old logs missed. The game itself didn't change: the server keeps game
 state in memory and only writes logs.
 
-Only two files touch Firestore today: `firebase-admin.js` (the connection) and `GameLogger.js`
-(three methods called from `game/createGameServer.js`).
+**Status: done on 2026-10-04.** Live games are logged to Postgres (backend PR #5, frontend PR #9),
+the 113 Firestore games are imported (PR #7), and Firebase is gone from the server (PR #8). The
+backup workflow runs (PR #6). Still to do by hand:
+
+- Remove the `FIREBASE_*` variables on Render, if not done yet.
+- Around 2026-11-04: delete the Firestore project and revoke its service-account key, including
+  the key file in the `palassy-game` folder.
+
+Before the move, only two files touched Firestore: `firebase-admin.js` (the connection) and
+`GameLogger.js` (three methods called from `game/createGameServer.js`). The first is deleted and
+the second rewritten.
 
 ## Why the data model changes too
 
@@ -69,8 +78,8 @@ At the real pace so far (113 games in 8 months), storage lasts over a century; a
 is an estimate: once live, measure it with `pg_total_relation_size` and update this table.
 
 "Unlimited API requests" and "50,000 monthly active users" cover Supabase's own API and Auth,
-which this plan doesn't use. Supabase Auth could later replace the Firebase Auth idea for player
-profiles (`plan.md`, item 4.1).
+which this plan doesn't use. Supabase Auth could later back player profiles
+across devices (`plan.md`, item 4.1).
 
 **The limit that matters:** free projects pause after 7 days without activity. Real play has gaps
 longer than that (2 games from June to August). While paused, games still work but logging fails
@@ -367,15 +376,17 @@ Actions tab, or the project will pause again. The workflow's own runs don't coun
 
 Each step is its own PR or task, in order.
 
-1. **Postgres logger and `playerKey`.** Schema, migration runner, new logger, server hooks, tests,
+1. **Postgres logger and `playerKey`.** Done 2026-10-04 (backend #5 and #6, frontend #9). Schema, migration runner, new logger, server hooks, tests,
    the keep-awake workflow, and the frontend's `playerKey`. Before deploying: run the migration,
    set the two role passwords, add `DATABASE_URL` to Render and the GitHub secrets. From this
    deploy on, logs go to Postgres only.
-2. **Import.** Export Firestore, run the import, check the numbers in section 6.
-3. **Remove Firebase.** (Code part done 2026-10-04.) Delete `firebase-admin.js`, the `firebase-admin` dependency and the
-   `FIREBASE_*` variables on Render. Leave the Firestore project untouched for a month as a
-   backup, then delete it and revoke the service-account key, including the key file in the
-   `palassy-game` folder.
+2. **Import.** Done 2026-10-04 (#7). Export Firestore, run the import, check the numbers in
+   section 6.
+3. **Remove Firebase.** Code done 2026-10-04 (#8). Delete `firebase-admin.js`, the
+   `firebase-admin` dependency and the `FIREBASE_*` variables on Render. Leave the Firestore
+   project untouched for a month as a backup, then delete it and revoke the service-account key,
+   including the key file in the `palassy-game` folder.
+
 Switching directly is simpler than writing to both databases for a while; Firestore stays as the
 backup during the month in step 3.
 
