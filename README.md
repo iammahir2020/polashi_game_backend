@@ -6,8 +6,9 @@ frontend lives in [polashi_game_frontend](https://github.com/iammahir2020/polash
 
 Game state is held in memory on a single instance. Games are logged to Postgres on Supabase
 (`GameLogger.js`, schema `polashi`), each event as it happens: the game and its players, every team
-proposal with its votes, mission results and Guptochor investigations. The data model and its
-reasons are in `postgres-migration.md`.
+proposal with its votes, mission results and Guptochor investigations, and how the game ended.
+Players are linked across games by `playerKey`, a random id the frontend keeps per device. The data
+model and its reasons are in `postgres-migration.md`.
 
 ## Layout
 
@@ -22,6 +23,8 @@ reasons are in `postgres-migration.md`.
 | `game/validation.js` | Payload schemas (zod) and player-name rules |
 | `game/limits.js` | Client address, token buckets and the HTTP rate limiter |
 | `game/constants.js` | Characters, decoy names, mission sizes, team distribution |
+| `scripts/import-firestore.js` | One-off import of the old Firestore game logs (already run) |
+| `.github/workflows/db-keepalive.yml` | Keeps the Supabase project awake; weekly encrypted backup |
 | `test/` | `npm test` (Node's built-in test runner) |
 
 ## Environment
@@ -52,7 +55,8 @@ docker run -d --name polashi-test-pg -e POSTGRES_PASSWORD=test -p 54329:5432 pos
 TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres npm test
 ```
 
-Games logged to Firestore before the move were copied in with `scripts/import-firestore.js`
+The 113 games logged to Firestore before the move (2026-02-08 to 2026-10-02) were copied in with
+`scripts/import-firestore.js` and are marked `source = 'firestore_import'`
 (`postgres-migration.md`, section 6). Firebase has since been removed from the server.
 
 `.github/workflows/db-keepalive.yml` queries the database every 3 days, so the free Supabase
@@ -127,4 +131,4 @@ almost entirely network time.
 `MAX_ROOMS` defaults to 1000 because earlier local measurements (about 30 KB per connected player on
 a ~90 MB baseline) put that near the ceiling of a 512 MB instance. Rooms live in one process's
 memory, so the server can't be scaled across instances as it stands, and a restart or deploy ends
-every game in progress.
+every game in progress. The next start logs those games as `abandoned` / `server_restart`.
