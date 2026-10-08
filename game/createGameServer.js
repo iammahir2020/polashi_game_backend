@@ -25,6 +25,17 @@ const {
 } = require("./room");
 const { normalizeName, uniqueName, schemas } = require("./validation");
 const { clientIp, createBucket, createHttpLimiter } = require("./limits");
+const { createRoomPersistence } = require("./roomPersistence");
+
+// Generated room codes are always this shape. Only codes like it are looked up
+// among the saved rooms, so a mistyped code never costs a database query.
+const SAVED_CODE = /^[A-Z0-9]{6}$/;
+
+// A returning player whose room can't be reached yet (another server still
+// holds it during a deploy, or the database didn't answer) gets
+// "serverUpdating" and asks again after this long.
+const RETRY_MS = 2000;
+const UPDATING_MESSAGE = "The server is updating. Please try again in a few seconds.";
 
 const DEFAULT_ORIGINS = [
   "https://the-great-polashi-game.vercel.app",
@@ -56,6 +67,11 @@ const noopLogger = {};
  *                      online after this long (default 10 minutes)
  *   roomMaxIdleMs delete any room untouched for this long
  *   sweepEveryMs  how often to sweep idle rooms
+ *   roomStore     saved rooms (db/roomStore.js): rooms are saved as they change
+ *                 and survive a restart. Without it rooms live only in memory.
+ *   persistFlushMs     how often changed rooms are saved (default 1 s)
+ *   savedSweepEveryMs  how often saved rooms nobody holds are swept (default 5
+ *                      minutes, 0 = never)
  *   configureApp(app)  hook to add extra HTTP routes
  *   log           { info, warn, error } (default console)
  */
@@ -76,6 +92,7 @@ function createGameServer(options = {}) {
   const LONE_ROOM_IDLE_MS = options.loneRoomIdleMs ?? 10 * 60 * 1000;
   const ROOM_MAX_IDLE_MS = options.roomMaxIdleMs ?? 12 * 60 * 60 * 1000;
   const SWEEP_EVERY_MS = options.sweepEveryMs ?? 60 * 1000;
+  const SAVED_SWEEP_EVERY_MS = options.savedSweepEveryMs ?? 5 * 60 * 1000;
 
   const allowedOrigins = options.allowedOrigins || DEFAULT_ORIGINS;
   const allowAnyOrigin = allowedOrigins.includes("*");
@@ -154,6 +171,16 @@ function createGameServer(options = {}) {
   // No prototype: room codes come from clients and must never hit Object.prototype keys.
   const rooms = Object.create(null);
 
+  // Saved rooms, when a store is configured. Every change to a room goes
+  // through broadcastRoomUpdate, so that is where changes are noted; deletions
+  // are noted where rooms are deleted.
+  const persist = options.roomStore
+    ? createRoomPersistence({ store: options.roomStore, rooms, log, flushMs: options.persistFlushMs })
+    : null;
+  // Set once the server starts handing its rooms on at shutdown: from then on
+  // nothing changes a room, so the saved copies are final.
+  let handingOff = false;
+
   // socket.id -> { current: { roomCode, playerId } | null, memberships: Map<"room|player", {...}> }
   const sessions = new Map();
 
@@ -203,6 +230,7 @@ function createGameServer(options = {}) {
   function broadcastRoomUpdate(roomCode) {
     const room = rooms[roomCode];
     if (!room) return;
+    if (persist) persist.changed(roomCode);
     const viewFor = roomViewer(room);
     room.players.forEach((p) => {
       if (p.socketId) io.to(p.socketId).emit("roomUpdated", viewFor(p));
@@ -255,23 +283,44 @@ function createGameServer(options = {}) {
   }
 
   // --- Room cleanup ----------------------------------------------------------
+  // Whether a room has been idle long enough to let go. Saved rooms nobody holds
+  // are judged the same way, with nobody online.
+  function isExpired(room, now) {
+    const idleFor = now - (room.lastActivity || 0);
+    const anyoneOnline = room.players.some((p) => p.online);
+    // A room nobody else ever joined, whose host has gone, is let go sooner,
+    // so abandoned (or mass-created) rooms don't hold slots for half an hour.
+    const lone = !room.gameStarted && room.players.length <= 1;
+    const idleLimit = lone ? Math.min(LONE_ROOM_IDLE_MS, ROOM_IDLE_MS) : ROOM_IDLE_MS;
+    return idleFor > ROOM_MAX_IDLE_MS || (!anyoneOnline && idleFor > idleLimit);
+  }
+
   function sweepRooms(now = Date.now()) {
+    if (handingOff) return;
     for (const [code, room] of Object.entries(rooms)) {
-      const idleFor = now - (room.lastActivity || 0);
-      const anyoneOnline = room.players.some((p) => p.online);
-      // A room nobody else ever joined, whose host has gone, is let go sooner,
-      // so abandoned (or mass-created) rooms don't hold slots for half an hour.
-      const lone = !room.gameStarted && room.players.length <= 1;
-      const idleLimit = lone ? Math.min(LONE_ROOM_IDLE_MS, ROOM_IDLE_MS) : ROOM_IDLE_MS;
-      if (idleFor > ROOM_MAX_IDLE_MS || (!anyoneOnline && idleFor > idleLimit)) {
+      if (isExpired(room, now)) {
         endGameLog(room, "abandoned", "swept_idle");
         for (const p of room.players) if (p.socketId) unbindPlayer(p.socketId, code, p.id);
         delete rooms[code];
+        if (persist) persist.deleted(code);
       }
     }
   }
   const sweepTimer = SWEEP_EVERY_MS > 0 ? setInterval(sweepRooms, SWEEP_EVERY_MS) : null;
   if (sweepTimer) sweepTimer.unref();
+
+  // Saved rooms that no running server holds (handed on at a deploy and never
+  // reclaimed, or left by a server that crashed) expire by the same rule.
+  function sweepSavedRooms() {
+    if (!persist || handingOff) return Promise.resolve();
+    return persist.sweepSaved({
+      minIdleMs: Math.min(LONE_ROOM_IDLE_MS, ROOM_IDLE_MS),
+      isExpired: (room) => isExpired(room, Date.now()),
+      onExpired: (code, room) => endGameLog(room, "abandoned", "swept_idle"),
+    });
+  }
+  const savedSweepTimer = persist && SAVED_SWEEP_EVERY_MS > 0 ? setInterval(sweepSavedRooms, SAVED_SWEEP_EVERY_MS) : null;
+  if (savedSweepTimer) savedSweepTimer.unref();
 
   // --- HTTP -------------------------------------------------------------------
   app.get("/", (_, res) => {
@@ -309,10 +358,19 @@ function createGameServer(options = {}) {
           if (!parsed.success) return;
           data = parsed.data;
         }
+        // While the rooms are being handed on, nothing may change them: a
+        // returning player is told to retry, and will reach the next server.
+        if (handingOff) {
+          if (event === "reconnectPlayer") socket.emit("serverUpdating", { retryInMs: RETRY_MS });
+          else if (event === "createRoom" || event === "joinRoom") socket.emit("errorMessage", UPDATING_MESSAGE);
+          return;
+        }
+        const failed = (err) => log.error(`Handler "${event}" failed:`, err && err.stack ? err.stack : err);
         try {
-          handler(data);
+          const result = handler(data);
+          if (result && typeof result.then === "function") result.catch(failed);
         } catch (err) {
-          log.error(`Handler "${event}" failed:`, err && err.stack ? err.stack : err);
+          failed(err);
         }
       });
     }
@@ -321,7 +379,7 @@ function createGameServer(options = {}) {
       socket.emit("characterListUpdate", CharacterList);
     });
 
-    on("createRoom", schemas.createRoom, ({ name, playerKey }) => {
+    on("createRoom", schemas.createRoom, async ({ name, playerKey }) => {
       const cleanName = normalizeName(name);
       if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
       const liveRooms = Object.values(rooms);
@@ -333,10 +391,8 @@ function createGameServer(options = {}) {
         return socket.emit("errorMessage", "Too many rooms have been opened from your network. Close one or try again later.");
       }
 
-      const roomCode = generateRoomCode((code) => !!rooms[code]);
       const id = crypto.randomUUID();
-
-      rooms[roomCode] = {
+      const room = {
         players: [{
           id,
           name: cleanName,
@@ -360,15 +416,47 @@ function createGameServer(options = {}) {
         gamesStarted: 0,
       };
 
+      // With saved rooms, the code is claimed in the database first, so it
+      // can't be one a saved room (perhaps held by another server) already uses.
+      let roomCode = null;
+      for (let attempt = 0; attempt < 5 && !roomCode; attempt++) {
+        const code = generateRoomCode((c) => !!rooms[c]);
+        if (!persist) roomCode = code;
+        else if (rooms[code]) continue;
+        else if ((await persist.create(code, room)) !== "taken") roomCode = code;
+      }
+      if (!roomCode || rooms[roomCode]) {
+        return socket.emit("errorMessage", "Could not create a room. Please try again.");
+      }
+      if (!socket.connected || handingOff) {
+        // Gone while the code was being claimed: nobody would ever use this room.
+        if (persist) persist.deleted(roomCode);
+        return;
+      }
+      rooms[roomCode] = room;
+
       socket.join(roomCode);
       bindSession(socket, roomCode, id);
-      sendJoined(socket, roomCode, rooms[roomCode].players[0]);
+      sendJoined(socket, roomCode, room.players[0]);
     });
 
-    on("joinRoom", schemas.joinRoom, ({ roomCode: rawCode, name, playerKey }) => {
+    // A room that isn't in memory, brought back from the saved rooms. Returns
+    // { room }, { unavailable: true } when it exists but can't be reached yet,
+    // or {} when there is no such room. Callers check memory first, so a room
+    // already here is used without waiting a tick, exactly as before.
+    async function restoreRoom(roomCode) {
+      if (!persist || !SAVED_CODE.test(roomCode)) return {};
+      const status = await persist.restore(roomCode);
+      if (status === "busy" || status === "error") return { unavailable: true };
+      return rooms[roomCode] ? { room: rooms[roomCode] } : {};
+    }
+
+    on("joinRoom", schemas.joinRoom, async ({ roomCode: rawCode, name, playerKey }) => {
       const roomCode = rawCode.trim().toUpperCase();
-      const room = rooms[roomCode];
+      const { room, unavailable } = rooms[roomCode] ? { room: rooms[roomCode] } : await restoreRoom(roomCode);
+      if (unavailable) return socket.emit("errorMessage", UPDATING_MESSAGE);
       if (!room) return socket.emit("errorMessage", "Room not found");
+      if (!socket.connected || handingOff) return;
       if (room.locked) return socket.emit("errorMessage", "Room is locked");
       if (room.players.length >= MAX_PLAYERS) return socket.emit("errorMessage", "Room full");
 
@@ -418,7 +506,10 @@ function createGameServer(options = {}) {
           });
         }
         for (const p of room.players) if (p.socketId) unbindPlayer(p.socketId, roomCode, p.id);
-        if (rooms[roomCode] === room) delete rooms[roomCode];
+        if (rooms[roomCode] === room) {
+          delete rooms[roomCode];
+          if (persist) persist.deleted(roomCode);
+        }
         log.info(`HQ Dissolved: Room ${roomCode} deleted.`);
       }, 100);
     });
@@ -460,13 +551,16 @@ function createGameServer(options = {}) {
       broadcastRoomUpdate(roomCode);
     });
 
-    on("reconnectPlayer", schemas.reconnectPlayer, ({ roomCode, playerId, reconnectToken }) => {
-      const room = rooms[roomCode];
+    on("reconnectPlayer", schemas.reconnectPlayer, async ({ roomCode, playerId, reconnectToken }) => {
+      const { room, unavailable } = rooms[roomCode] ? { room: rooms[roomCode] } : await restoreRoom(roomCode);
+      // The room exists but can't be reached yet: keep the seat and ask again.
+      if (unavailable) return socket.emit("serverUpdating", { retryInMs: RETRY_MS });
       if (!room) {
         socket.emit("errorMessage", "Room no longer exists");
         socket.emit("roomDissolved");
         return;
       }
+      if (!socket.connected || handingOff) return;
 
       const player = room.players.find((p) => p.id === playerId);
       // A seat can only be reclaimed with its secret, which only its owner ever received.
@@ -480,7 +574,9 @@ function createGameServer(options = {}) {
       player.socketId = socket.id;
       player.online = true;
       const stats = statsOf(room, player.id);
-      if (stats) stats.reconnects++;
+      // The first return after a restore was caused by the restart, not the player.
+      if (stats && !player.awaitingRestore) stats.reconnects++;
+      delete player.awaitingRestore;
       touch(room);
 
       socket.join(roomCode);
@@ -825,6 +921,7 @@ function createGameServer(options = {}) {
       if (room.players.length === 0) {
         endGameLog(room, "abandoned", "room_emptied");
         delete rooms[roomCode];
+        if (persist) persist.deleted(roomCode);
         return;
       }
 
@@ -884,7 +981,8 @@ function createGameServer(options = {}) {
     socket.on("disconnect", () => {
       const s = sessions.get(socket.id);
       sessions.delete(socket.id);
-      if (!s) return;
+      // Disconnected by the shutdown itself, after the rooms were handed on.
+      if (!s || handingOff) return;
       for (const { roomCode, playerId } of s.memberships.values()) {
         const room = rooms[roomCode];
         const player = room && room.players.find((p) => p.id === playerId && p.socketId === socket.id);
@@ -898,14 +996,43 @@ function createGameServer(options = {}) {
     });
   });
 
+  // Starts saving rooms (heartbeat, save timer) and sweeps saved rooms once.
+  // A no-op without a room store.
+  async function start() {
+    if (!persist) return;
+    await persist.start();
+    await sweepSavedRooms();
+  }
+
+  // On shutdown, before close(): stops every change to the rooms, runs
+  // `beforeSave` (the server flushes its game logs here, so each saved room
+  // carries its game's database ids), then saves every room as handed on, so
+  // the next server takes them over at once. The clients are disconnected by
+  // close() afterwards and reconnect to the next server.
+  async function handOff({ beforeSave } = {}) {
+    handingOff = true;
+    if (sweepTimer) clearInterval(sweepTimer);
+    if (savedSweepTimer) clearInterval(savedSweepTimer);
+    if (beforeSave) {
+      try {
+        await beforeSave();
+      } catch (err) {
+        log.error("Hand-off (before saving) failed:", err && err.message);
+      }
+    }
+    if (persist) await persist.handOff();
+  }
+
   function close() {
     if (sweepTimer) clearInterval(sweepTimer);
+    if (savedSweepTimer) clearInterval(savedSweepTimer);
+    if (persist) persist.stop();
     httpLimiter.stop();
     io.close();
     return new Promise((resolve) => httpServer.close(() => resolve()));
   }
 
-  return { app, httpServer, io, rooms, sweepRooms, close };
+  return { app, httpServer, io, rooms, sweepRooms, sweepSavedRooms, persistence: persist, start, handOff, close };
 }
 
 module.exports = { createGameServer, DEFAULT_ORIGINS };

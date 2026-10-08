@@ -16,7 +16,9 @@ into what's here now: one person opens a room, and everyone plays from their own
 
 It began as a way for our group to keep playing. If you enjoy it, [buy the board game](https://www.rokomari.com/product/293046/polashi-a-social-deduction-board-game-5-to-10-players-age-12plus) too.
 
-Game state is held in memory on a single instance. Games are logged to Postgres on Supabase
+Game state is held in memory on a single instance. With `PERSIST_ROOMS=1` each live room is also
+saved to Postgres (schema `polashi_live`), so games survive a deploy, crash or free-plan sleep; see
+`persist-rooms.md`. Games are logged to Postgres on Supabase
 (`GameLogger.js`, schema `polashi`), each event as it happens: the game and its players, every team
 proposal with its votes, mission results and Guptochor investigations, and how the game ended.
 Players are linked across games by `playerKey`, a random id the frontend keeps per device. The data
@@ -31,6 +33,9 @@ model and its reasons are in `postgres-migration.md`.
 | `db/pool.js` | Postgres pool (5 connections, TLS verified with `db/prod-ca-2021.crt`) |
 | `db/migrate.js`, `db/migrations/` | `npm run migrate`: applies numbered SQL files once each |
 | `game/createGameServer.js` | Express + Socket.IO server and every socket event handler |
+| `game/roomState.js` | A live room to JSON and back, for saving |
+| `game/roomPersistence.js` | Saved rooms: batched saves, restore on demand, hand-off at shutdown, sweeping |
+| `db/roomStore.js` | Saved rooms' rows in `polashi_live`, with per-process ownership and heartbeats |
 | `game/room.js` | Per-player room view (what each client may see), secret intel, codes and tokens |
 | `game/validation.js` | Payload schemas (zod) and player-name rules |
 | `game/limits.js` | Client address, token buckets and the HTTP rate limiter |
@@ -46,6 +51,7 @@ model and its reasons are in `postgres-migration.md`.
 | `PORT` | no | Listen port (default 3000; Render sets it) |
 | `CLIENT_URL` | recommended | Allowed browser origins, comma-separated. Defaults to the production site and local dev servers |
 | `DATABASE_URL` | yes, in production | Supabase session pooler string for the `polashi_app` role. Without it the game runs and nothing is logged |
+| `PERSIST_ROOMS` | no | `1` saves live rooms to Postgres so games survive a deploy or restart (needs `DATABASE_URL` and migration `002`; see `persist-rooms.md`). Off by default |
 | `MAX_ROOMS` | no | Live rooms allowed on this instance (default 1000, sized for 512 MB of RAM; see below) |
 | `MAX_CONNECTIONS` | no | Open connections allowed on this instance (default 5000; `0` turns the cap off) |
 | `MAX_SOCKETS_PER_IP` | no | Open connections from one address (default 40, enough for a full party on one Wi-Fi; `0` = off) |
@@ -142,8 +148,10 @@ almost entirely network time.
 
 `MAX_ROOMS` defaults to 1000 because earlier local measurements (about 30 KB per connected player on
 a ~90 MB baseline) put that near the ceiling of a 512 MB instance. Rooms live in one process's
-memory, so the server can't be scaled across instances as it stands, and a restart or deploy ends
-every game in progress. The next start logs those games as `abandoned` / `server_restart`.
+memory, so the server can't be scaled across instances as it stands. Without `PERSIST_ROOMS`, a
+restart or deploy ends every game in progress and the next start logs those games as `abandoned` /
+`server_restart`. With it, rooms are handed on to the next process and only games whose room was
+lost are closed (`persist-rooms.md`).
 
 ## Copyright
 

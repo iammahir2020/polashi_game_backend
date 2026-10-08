@@ -105,8 +105,9 @@ async function startGame(srv, setup, opts = {}) {
 // Plays one round the way the UI does: host appoints a General, the General
 // proposes a team and calls the council vote, everyone votes, the host calls the
 // secret vote, the team votes. `teamOrder` (player ids) decides who is picked
-// first; by default the battalion in seating order.
-async function playRound(setup, { council = "yes", mission = "yes", teamOrder } = {}) {
+// first; by default the battalion in seating order. `until: "council"` stops
+// once the council vote is decided; playMission() then finishes the round.
+async function playRound(setup, { council = "yes", mission = "yes", teamOrder, until } = {}) {
   const { roomCode, players, host } = setup;
   let update = next(host.socket, "roomUpdated", (r) => r.players.some((p) => p.isGeneral));
   host.socket.emit("assignGeneral", { roomCode, requesterId: host.id });
@@ -129,9 +130,14 @@ async function playRound(setup, { council = "yes", mission = "yes", teamOrder } 
   update = next(host.socket, "roomUpdated", (r) => r.voting && !r.voting.active);
   players.forEach((p) => p.socket.emit("castVote", { roomCode, playerId: p.id, choice: council }));
   room = await update;
-  if (room.voting.result !== "Yes") return { room, team };
+  if (room.voting.result !== "Yes" || until === "council") return { room, team };
+  return playMission(setup, team, { mission });
+}
 
-  update = next(host.socket, "roomUpdated", (r) => r.voting && r.voting.active && r.voting.type === "missionOutcome");
+// The second half of a round: the host calls the secret vote and `team` votes.
+async function playMission(setup, team, { mission = "yes" } = {}) {
+  const { roomCode, players, host } = setup;
+  let update = next(host.socket, "roomUpdated", (r) => r.voting && r.voting.active && r.voting.type === "missionOutcome");
   host.socket.emit("startSecretVote", { roomCode, requesterId: host.id });
   await update;
 
@@ -139,8 +145,31 @@ async function playRound(setup, { council = "yes", mission = "yes", teamOrder } 
   players.filter((p) => team.includes(p.id)).forEach((p) =>
     p.socket.emit("castVote", { roomCode, playerId: p.id, choice: mission }),
   );
-  room = await update;
+  const room = await update;
   return { room, team };
 }
 
-module.exports = { startServer, next, silence, setupRoom, startGame, playRound, ALL_CHARACTERS };
+// Every player returns to `srv` with their saved seat, as the frontend does
+// after a disconnect (a deploy, say); their sockets in `setup` are replaced.
+// Resolves once the host has seen everyone back online, so no update from the
+// rejoining is still on its way when the test carries on.
+async function rejoinAll(srv, setup) {
+  const { roomCode, players, host } = setup;
+  const rejoin = async (p) => {
+    const socket = await srv.client();
+    const joined = next(socket, "roomJoined");
+    socket.emit("reconnectPlayer", { roomCode, playerId: p.id, reconnectToken: p.token });
+    const data = await joined;
+    p.socket = socket;
+    return data;
+  };
+  const views = [await rejoin(host)];
+  const allBack = players.length > 1
+    ? next(host.socket, "roomUpdated", (r) => r.players.every((p) => p.online))
+    : Promise.resolve();
+  for (const p of players) if (p !== host) views.push(await rejoin(p));
+  await allBack;
+  return views;
+}
+
+module.exports = { startServer, next, silence, setupRoom, startGame, playRound, playMission, rejoinAll, ALL_CHARACTERS };
