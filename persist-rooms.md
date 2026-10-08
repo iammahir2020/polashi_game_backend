@@ -151,6 +151,11 @@ The frontend handles `serverUpdating` in `src/components/GameDashboard/index.tsx
 - after 30 retries in a row (about a minute) it stops and asks the player to refresh later, seat
   still saved.
 
+Related, in the same change: `roomDissolved` now carries a reason. `{ reason: "closed_by_host" }`
+when the Game Master closes the room, `{ reason: "room_gone" }` when a rejoin finds no room. The
+frontend shows a "Room Closed" modal with the matching wording and returns home after 5 s (or on
+OK). An older client ignores the payload.
+
 ## Load on the free plans
 
 Measured and estimated on 2026-10-08:

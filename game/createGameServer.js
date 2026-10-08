@@ -492,8 +492,9 @@ function createGameServer(options = {}) {
       const room = actor.room;
       endGameLog(room, "abandoned", "room_closed");
 
-      // 1. Broadcast to everyone in the room FIRST
-      io.to(roomCode).emit("roomDissolved");
+      // 1. Broadcast to everyone in the room FIRST. The reason lets the other
+      // players' screens say the host closed it (an older client ignores it).
+      io.to(roomCode).emit("roomDissolved", { reason: "closed_by_host" });
 
       // 2. Use a tiny delay before deleting memory and kicking sockets
       // This ensures the "roomDissolved" packet actually leaves the server buffer
@@ -557,7 +558,7 @@ function createGameServer(options = {}) {
       if (unavailable) return socket.emit("serverUpdating", { retryInMs: RETRY_MS });
       if (!room) {
         socket.emit("errorMessage", "Room no longer exists");
-        socket.emit("roomDissolved");
+        socket.emit("roomDissolved", { reason: "room_gone" });
         return;
       }
       if (!socket.connected || handingOff) return;

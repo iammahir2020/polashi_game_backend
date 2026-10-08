@@ -172,7 +172,8 @@ test("closing the room mid-game logs the game as abandoned", async (t) => {
   await startGame(srv, setup);
   const dissolved = next(setup.players[1].socket, "roomDissolved");
   setup.host.socket.emit("closeRoom", { roomCode: setup.roomCode });
-  await dissolved;
+  // The other players are told who closed it, so their screen can say so.
+  assert.deepEqual(await dissolved, { reason: "closed_by_host" });
   const [event, ended] = srv.calls.at(-1);
   assert.equal(event, "gameEnded");
   assert.deepEqual([ended.status, ended.reason, ended.winner, ended.missionResults], ["abandoned", "room_closed", null, ""]);

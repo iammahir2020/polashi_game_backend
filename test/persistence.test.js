@@ -395,7 +395,7 @@ test("a room that really is gone is still reported gone", async (t) => {
   const s = await b.client();
   const gone = next(s, "roomDissolved");
   s.emit("reconnectPlayer", { roomCode: "ZZZZZZ", playerId: "p", reconnectToken: "t" });
-  await gone;
+  assert.deepEqual(await gone, { reason: "room_gone" });
 });
 
 test("only real room codes reach the database, and a missing one is remembered briefly", async (t) => {
