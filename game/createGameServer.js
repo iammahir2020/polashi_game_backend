@@ -26,6 +26,7 @@ const {
 const { normalizeName, uniqueName, schemas } = require("./validation");
 const { clientIp, createBucket, createHttpLimiter } = require("./limits");
 const { createRoomPersistence } = require("./roomPersistence");
+const { sendError, notification } = require("./messages");
 
 // Generated room codes are always this shape. Only codes like it are looked up
 // among the saved rooms, so a mistyped code never costs a database query.
@@ -35,7 +36,6 @@ const SAVED_CODE = /^[A-Z0-9]{6}$/;
 // holds it during a deploy, or the database didn't answer) gets
 // "serverUpdating" and asks again after this long.
 const RETRY_MS = 2000;
-const UPDATING_MESSAGE = "The server is updating. Please try again in a few seconds.";
 
 const DEFAULT_ORIGINS = [
   "https://the-great-polashi-game.vercel.app",
@@ -343,7 +343,7 @@ function createGameServer(options = {}) {
       const now = Date.now();
       if (now - warnedAt > 5000) {
         warnedAt = now;
-        socket.emit("errorMessage", "Too many actions. Please slow down.");
+        sendError(socket, "RATE_LIMITED");
       }
       return false;
     }
@@ -362,7 +362,7 @@ function createGameServer(options = {}) {
         // returning player is told to retry, and will reach the next server.
         if (handingOff) {
           if (event === "reconnectPlayer") socket.emit("serverUpdating", { retryInMs: RETRY_MS });
-          else if (event === "createRoom" || event === "joinRoom") socket.emit("errorMessage", UPDATING_MESSAGE);
+          else if (event === "createRoom" || event === "joinRoom") sendError(socket, "SERVER_UPDATING");
           return;
         }
         const failed = (err) => log.error(`Handler "${event}" failed:`, err && err.stack ? err.stack : err);
@@ -381,14 +381,14 @@ function createGameServer(options = {}) {
 
     on("createRoom", schemas.createRoom, async ({ name, playerKey }) => {
       const cleanName = normalizeName(name);
-      if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
+      if (!cleanName) return sendError(socket, "NAME_REQUIRED");
       const liveRooms = Object.values(rooms);
       if (liveRooms.length >= MAX_ROOMS) {
-        return socket.emit("errorMessage", "The server is full right now. Please try again later.");
+        return sendError(socket, "SERVER_FULL");
       }
       // One address can't take every room slot on the server.
       if (MAX_ROOMS_PER_IP && liveRooms.filter((r) => r.creatorIp === ip).length >= MAX_ROOMS_PER_IP) {
-        return socket.emit("errorMessage", "Too many rooms have been opened from your network. Close one or try again later.");
+        return sendError(socket, "TOO_MANY_ROOMS");
       }
 
       const id = crypto.randomUUID();
@@ -426,7 +426,7 @@ function createGameServer(options = {}) {
         else if ((await persist.create(code, room)) !== "taken") roomCode = code;
       }
       if (!roomCode || rooms[roomCode]) {
-        return socket.emit("errorMessage", "Could not create a room. Please try again.");
+        return sendError(socket, "CREATE_FAILED");
       }
       if (!socket.connected || handingOff) {
         // Gone while the code was being claimed: nobody would ever use this room.
@@ -454,14 +454,14 @@ function createGameServer(options = {}) {
     on("joinRoom", schemas.joinRoom, async ({ roomCode: rawCode, name, playerKey }) => {
       const roomCode = rawCode.trim().toUpperCase();
       const { room, unavailable } = rooms[roomCode] ? { room: rooms[roomCode] } : await restoreRoom(roomCode);
-      if (unavailable) return socket.emit("errorMessage", UPDATING_MESSAGE);
-      if (!room) return socket.emit("errorMessage", "Room not found");
+      if (unavailable) return sendError(socket, "SERVER_UPDATING");
+      if (!room) return sendError(socket, "ROOM_NOT_FOUND");
       if (!socket.connected || handingOff) return;
-      if (room.locked) return socket.emit("errorMessage", "Room is locked");
-      if (room.players.length >= MAX_PLAYERS) return socket.emit("errorMessage", "Room full");
+      if (room.locked) return sendError(socket, "ROOM_LOCKED");
+      if (room.players.length >= MAX_PLAYERS) return sendError(socket, "ROOM_FULL");
 
       const cleanName = normalizeName(name);
-      if (!cleanName) return socket.emit("errorMessage", "Please enter a name.");
+      if (!cleanName) return sendError(socket, "NAME_REQUIRED");
 
       const id = crypto.randomUUID();
       const player = {
@@ -487,7 +487,7 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       if (!isHost(actor.player)) {
-        return socket.emit("errorMessage", "Unauthorized: Only the Master can dissolve HQ.");
+        return sendError(socket, "NOT_HOST_CLOSE");
       }
       const room = actor.room;
       endGameLog(room, "abandoned", "room_closed");
@@ -542,12 +542,15 @@ function createGameServer(options = {}) {
         alliance: target.character.team,
       });
 
-      io.to(roomCode).emit("notification", {
-        message: `🕵️‍♂️ Intelligence Alert: ${requester.name} has deployed a Guptochor to investigate ${target.name}!`,
-        type: "info",
-        requesterId: requester.id, // Send these so frontend can filter
-        targetId: targetPlayerId,
-      });
+      io.to(roomCode).emit("notification", notification(
+        "GUPTOCHOR_DEPLOYED",
+        { requester: requester.name, target: target.name },
+        {
+          type: "info",
+          requesterId: requester.id, // Send these so frontend can filter
+          targetId: targetPlayerId,
+        },
+      ));
 
       broadcastRoomUpdate(roomCode);
     });
@@ -557,7 +560,7 @@ function createGameServer(options = {}) {
       // The room exists but can't be reached yet: keep the seat and ask again.
       if (unavailable) return socket.emit("serverUpdating", { retryInMs: RETRY_MS });
       if (!room) {
-        socket.emit("errorMessage", "Room no longer exists");
+        sendError(socket, "ROOM_GONE");
         socket.emit("roomDissolved", { reason: "room_gone" });
         return;
       }
@@ -566,7 +569,7 @@ function createGameServer(options = {}) {
       const player = room.players.find((p) => p.id === playerId);
       // A seat can only be reclaimed with its secret, which only its owner ever received.
       if (!player || !tokensMatch(player.reconnectToken, reconnectToken)) {
-        return socket.emit("errorMessage", "Player not found in room");
+        return sendError(socket, "PLAYER_NOT_FOUND");
       }
 
       if (player.socketId && player.socketId !== socket.id) {
@@ -594,7 +597,7 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       const { room, player: gm } = actor;
-      if (!isHost(gm)) return socket.emit("errorMessage", "Only the GM can appoint a General.");
+      if (!isHost(gm)) return sendError(socket, "NOT_HOST_GENERAL");
       if (!room.gameStarted || !room.activePlayerIds || room.activePlayerIds.length === 0) return;
 
       if (!room.generalHistory) { room.generalHistory = []; }
@@ -714,10 +717,11 @@ function createGameServer(options = {}) {
           if (room.scoreGreen === 3) {
             room.gameStatus = "MIR_JAFOR_TURN";
             const mirJafor = room.players.find(p => p.character?.id === MIR_JAFOR_ID);
-            io.to(roomCode).emit("notification", {
-              message: `🚨 Critical Alert: The Nawabs have the lead, but ${mirJafor?.name || "Mir Jafor"} is attempting a final betrayal!`,
-              type: "warning",
-            });
+            io.to(roomCode).emit("notification", notification(
+              "MIR_JAFOR_TURN",
+              { name: mirJafor?.name || "Mir Jafor" },
+              { type: "warning" },
+            ));
           } else if (room.scoreRed === 3) {
             room.gameStatus = "OVER";
             room.winner = WINNER_EIC;
@@ -752,15 +756,15 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       const { room, player: gm } = actor;
-      if (!isHost(gm)) return socket.emit("errorMessage", "Only GM allowed");
+      if (!isHost(gm)) return sendError(socket, "NOT_HOST");
       if (room.gameStarted) return;
 
       const uniqueActive = [...new Set(activeIds)];
       // Validate active player count (5-10)
       const playerCount = uniqueActive.length;
-      if (playerCount < 5 || playerCount > 10) return socket.emit("errorMessage", "Battalion must be between 5 and 10 players.");
+      if (playerCount < 5 || playerCount > 10) return sendError(socket, "BAD_BATTALION_SIZE");
       if (!uniqueActive.every((pid) => room.players.some((p) => p.id === pid))) {
-        return socket.emit("errorMessage", "Battalion contains players who are not in this room.");
+        return sendError(socket, "BAD_BATTALION_PLAYERS");
       }
 
       const selectedCharacters = [...new Set(selectedCharIds)].map(cid =>
@@ -772,7 +776,7 @@ function createGameServer(options = {}) {
       const eicChoices = selectedCharacters.filter(c => c.team === EIC_TEAM && c.id !== MIR_JAFOR_ID);
       const hasCore = selectedCharacters.some(c => c.id === MIR_JAFOR_ID) && selectedCharacters.some(c => c.id === MIR_MADAN_ID);
       if (!hasCore || nawabChoices.length < nawabTarget - 1 || eicChoices.length < eicTarget - 1) {
-        return socket.emit("errorMessage", "Select enough characters for both sides before starting.");
+        return sendError(socket, "CHARACTERS_INCOMPLETE");
       }
 
       room.disableSecretIntelligence = !!disableSecretIntelligence;
@@ -845,7 +849,7 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       const { room, player: gm } = actor;
-      if (!isHost(gm)) return socket.emit("errorMessage", "Only the GM can reset the game.");
+      if (!isHost(gm)) return sendError(socket, "NOT_HOST_RESET");
       endGameLog(room, "reset", "reset_by_host");
       room.gameStarted = false;
       room.locked = false;
@@ -885,7 +889,7 @@ function createGameServer(options = {}) {
     on("setRoomLock", schemas.setRoomLock, ({ roomCode, locked }) => {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
-      if (!isHost(actor.player)) return socket.emit("errorMessage", "Only GM allowed");
+      if (!isHost(actor.player)) return sendError(socket, "NOT_HOST");
 
       actor.room.locked = locked;
       touch(actor.room);
@@ -896,8 +900,8 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       const { room, player } = actor;
-      if (!isHost(player)) return socket.emit("errorMessage", "Only GM allowed");
-      if (room.gameStarted) return socket.emit("errorMessage", "Secret Intel setting can only be changed before the game starts.");
+      if (!isHost(player)) return sendError(socket, "NOT_HOST");
+      if (room.gameStarted) return sendError(socket, "INTEL_LOCKED");
 
       room.disableSecretIntelligence = !!disableSecretIntelligence;
       touch(room);
@@ -936,7 +940,7 @@ function createGameServer(options = {}) {
       const actor = actorIn(socket, roomCode);
       if (!actor) return;
       const { room, player: gm } = actor;
-      if (!isHost(gm)) return socket.emit("errorMessage", "Only GM allowed");
+      if (!isHost(gm)) return sendError(socket, "NOT_HOST");
       if (targetPlayerId === gm.id) return;
 
       const targetIndex = room.players.findIndex(p => p.id === targetPlayerId);
